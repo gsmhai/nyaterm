@@ -6,6 +6,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -41,8 +42,6 @@ import DeleteQuickCommandCategoryDialog from "@/components/dialog/quick-commands
 import DeleteQuickCommandDialog from "@/components/dialog/quick-commands/DeleteQuickCommandDialog";
 import QuickCommandsImportDialog from "@/components/dialog/quick-commands/QuickCommandsImportDialog";
 import RenameQuickCommandCategoryDialog from "@/components/dialog/quick-commands/RenameQuickCommandCategoryDialog";
-import PanelHeader from "@/components/layout/PanelHeader";
-import ResizeHandle from "@/components/layout/ResizeHandle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -152,21 +151,8 @@ const COLOR_DOT: Record<string, string> = {
   purple: "bg-purple-500",
 };
 
-const QUICK_COMMAND_CATEGORY_WIDTH_DEFAULT = 176;
-const QUICK_COMMAND_CATEGORY_WIDTH_MIN = 128;
-const QUICK_COMMAND_CATEGORY_WIDTH_MAX = 320;
 const QUICK_COMMAND_CATEGORY_DRAG_MIME = "application/x-nyaterm-quick-category";
 const QUICK_COMMAND_DRAG_MIME = "application/x-nyaterm-quick-command";
-
-function clampQuickCommandCategoryWidth(width: unknown) {
-  const numericWidth = typeof width === "number" ? width : Number(width);
-  if (!Number.isFinite(numericWidth))
-    return QUICK_COMMAND_CATEGORY_WIDTH_DEFAULT;
-  return Math.max(
-    QUICK_COMMAND_CATEGORY_WIDTH_MIN,
-    Math.min(QUICK_COMMAND_CATEGORY_WIDTH_MAX, Math.round(numericWidth)),
-  );
-}
 
 function normalizeQuickCommandViewMode(mode: unknown): QuickCommandViewMode {
   return mode === "list" || mode === "compact" || mode === "tile"
@@ -328,6 +314,11 @@ function QuickCommands({ onSend, onSendToAll, sendDisabled = false }: QuickComma
     useState<QuickCommandDragTarget | null>(null);
   const categoryDragSourceRef = useRef<string | null>(null);
   const commandDragSourceRef = useRef<string | null>(null);
+  const [categoryPopoverOpen, setCategoryPopoverOpen] = useState(false);
+  const headerContentRef = useRef<HTMLDivElement>(null);
+  const measureContainerRef = useRef<HTMLDivElement>(null);
+  const [tileWidths, setTileWidths] = useState<Map<string, number>>(new Map());
+  const [headerContentWidth, setHeaderContentWidth] = useState(0);
 
   // Variable Prompt State
   const [promptCmd, setPromptCmd] = useState<QuickCommand | null>(null);
@@ -646,9 +637,6 @@ function QuickCommands({ onSend, onSendToAll, sendDisabled = false }: QuickComma
   const sortMode = normalizeQuickCommandSortMode(
     appSettings.ui.quick_cmd_sort_mode,
   );
-  const categorySidebarWidth = clampQuickCommandCategoryWidth(
-    appSettings.ui.quick_cmd_category_width,
-  );
   const storedSelectedCategory =
     appSettings.ui.quick_cmd_selected_category || "all";
   const selectedCategory =
@@ -680,22 +668,18 @@ function QuickCommands({ onSend, onSendToAll, sendDisabled = false }: QuickComma
     },
     [updateUi],
   );
-  const resizeCategorySidebar = useCallback(
-    (delta: number) => {
-      updateUi((current) => ({
-        quick_cmd_category_width: clampQuickCommandCategoryWidth(
-          (current.quick_cmd_category_width ??
-            QUICK_COMMAND_CATEGORY_WIDTH_DEFAULT) + delta,
-        ),
-      }));
-    },
-    [updateUi],
-  );
   const setSelectedCategory = useCallback(
     (categoryId: string) => {
       updateUi({ quick_cmd_selected_category: categoryId });
     },
     [updateUi],
+  );
+  const selectCategory = useCallback(
+    (categoryId: string) => {
+      setSelectedCategory(categoryId);
+      setCategoryPopoverOpen(false);
+    },
+    [setSelectedCategory],
   );
 
   useEffect(() => {
@@ -771,12 +755,48 @@ function QuickCommands({ onSend, onSendToAll, sendDisabled = false }: QuickComma
     return sorted;
   }, [allCategories, commands, search, selectedCategory, sortMode]);
 
+  useLayoutEffect(() => {
+    if (!measureContainerRef.current) return;
+    const widths = new Map<string, number>();
+    for (const child of measureContainerRef.current.children) {
+      const el = child as HTMLElement;
+      const id = el.dataset.commandId;
+      if (id) {
+        widths.set(id, el.getBoundingClientRect().width);
+      }
+    }
+    setTileWidths(widths);
+  }, [filteredCommands]);
+
+  useEffect(() => {
+    if (!headerContentRef.current) return;
+    const observer = new ResizeObserver((entries) => {
+      setHeaderContentWidth(entries[0].contentRect.width);
+    });
+    observer.observe(headerContentRef.current);
+    return () => observer.disconnect();
+  }, []);
+
+  const headerCommandsCount = useMemo(() => {
+    if (headerContentWidth <= 0 || tileWidths.size === 0) return 0;
+    let used = 0;
+    let count = 0;
+    const gap = 6;
+    for (const cmd of filteredCommands) {
+      const width = tileWidths.get(cmd.id);
+      if (!width) return count;
+      const total = width + (count > 0 ? gap : 0);
+      if (used + total > headerContentWidth) break;
+      used += total;
+      count++;
+    }
+    return count;
+  }, [filteredCommands, headerContentWidth, tileWidths]);
+
+  const headerCommands = filteredCommands.slice(0, headerCommandsCount);
+  const overflowCommands = filteredCommands.slice(headerCommandsCount);
+
   const searchQuery = search.trim();
-  const hasActiveFilters = searchQuery.length > 0 || selectedCategory !== "all";
-  const headerMetaText =
-    hasActiveFilters && commands.length > 0
-      ? `${filteredCommands.length}/${commands.length}`
-      : `${commands.length}`;
   const categoryToDeleteCommandCount = useMemo(() => {
     if (!categoryToDelete) return 0;
     const deleteIds = collectQuickCommandCategoryDescendantIds(
@@ -1501,589 +1521,632 @@ function QuickCommands({ onSend, onSendToAll, sendDisabled = false }: QuickComma
       t,
     ],
   );
+  const renderCategoryTree = () => (
+    <div
+      className="flex flex-col gap-1"
+      onDragOver={handleCategoryRootDragOver}
+      onDrop={handleCategoryRootDrop}
+    >
+      {(() => {
+        const active = selectedCategory === "all";
+        return (
+          <ContextMenu>
+            <ContextMenuTrigger asChild>
+              <button
+                type="button"
+                className="group flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-2 text-left text-xs transition-colors hover:bg-[var(--df-bg-hover)]"
+                style={{
+                  backgroundColor: active
+                    ? "var(--df-bg-hover)"
+                    : "transparent",
+                  color: active ? "var(--df-primary)" : "var(--df-text)",
+                }}
+                onClick={() => selectCategory("all")}
+              >
+                <span
+                  className="h-1.5 w-1.5 shrink-0 rounded-full"
+                  style={{
+                    backgroundColor: active
+                      ? "var(--df-primary)"
+                      : "var(--df-text-dimmed)",
+                    opacity: active ? 1 : 0.6,
+                  }}
+                />
+                <span className="min-w-0 flex-1 truncate font-medium">
+                  {t("quickCommands.allCategories")}
+                </span>
+                <span
+                  className="shrink-0 rounded px-1.5 py-0.5 text-[0.625rem] leading-none"
+                  style={{
+                    backgroundColor: active
+                      ? "color-mix(in_srgb,var(--df-primary)_14%,transparent)"
+                      : "var(--df-bg-hover)",
+                    color: active
+                      ? "var(--df-primary)"
+                      : "var(--df-text-dimmed)",
+                  }}
+                >
+                  {commands.length}
+                </span>
+              </button>
+            </ContextMenuTrigger>
+            {renderCategoryContextMenuContent(null)}
+          </ContextMenu>
+        );
+      })()}
+
+      {categoryDragTarget?.categoryId === null && (
+        <div className="h-0.5 rounded-full bg-primary/70" />
+      )}
+
+      {visibleCategoryRows.map(({ node, depth }) => {
+        const category = node.category;
+        const active = selectedCategory === category.id;
+        const expanded = expandedCategoryIds.has(category.id);
+        const savedCategory = savedCategories.find(
+          (item) => item.id === category.id,
+        );
+        const moveState = savedCategory
+          ? getQuickCommandCategoryMoveState(
+              savedCategories,
+              savedCategory.id,
+            )
+          : { canMoveUp: false, canMoveDown: false };
+        const categoryTargetPosition =
+          categoryDragTarget?.categoryId === category.id
+            ? categoryDragTarget.position
+            : null;
+        const categoryIsDragging = draggingCategoryId === category.id;
+
+        return (
+          <ContextMenu key={category.id}>
+            <ContextMenuTrigger asChild disabled={!savedCategory}>
+              <div className="relative">
+                {categoryTargetPosition === "before" && (
+                  <span className="absolute left-1 right-1 top-0 z-10 h-0.5 rounded-full bg-primary/70" />
+                )}
+                {categoryTargetPosition === "after" && (
+                  <span className="absolute bottom-0 left-1 right-1 z-10 h-0.5 rounded-full bg-primary/70" />
+                )}
+                <div
+                  draggable={!!savedCategory}
+                  onDragStart={(event) => {
+                    if (savedCategory)
+                      handleCategoryDragStart(event, savedCategory.id);
+                  }}
+                  onDragOver={(event) =>
+                    handleCategoryDragOver(event, category.id)
+                  }
+                  onDrop={(event) => handleCategoryDrop(event, category.id)}
+                  onDragEnd={resetCategoryDrag}
+                  className={cn(
+                    "group flex h-8 w-full min-w-0 items-center rounded-md text-xs transition-colors hover:bg-[var(--df-bg-hover)]",
+                    savedCategory && "cursor-grab active:cursor-grabbing",
+                    categoryIsDragging && "opacity-50",
+                    categoryTargetPosition === "inside" &&
+                      "ring-1 ring-primary/70",
+                  )}
+                  style={{
+                    backgroundColor: active
+                      ? "var(--df-bg-hover)"
+                      : "transparent",
+                    color: active ? "var(--df-primary)" : "var(--df-text)",
+                    paddingLeft: `${Math.min(depth, 4) * 0.7 + 0.25}rem`,
+                  }}
+                >
+                  {node.children.length > 0 ? (
+                    <button
+                      type="button"
+                      className="flex h-7 w-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground"
+                      aria-label={category.name}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        toggleCategoryExpanded(category.id);
+                      }}
+                    >
+                      <MdChevronRight
+                        className={cn(
+                          "text-[0.875rem] transition-transform",
+                          expanded && "rotate-90",
+                        )}
+                      />
+                    </button>
+                  ) : depth > 0 ? (
+                    <span className="h-7 w-5 shrink-0" />
+                  ) : null}
+                  <button
+                    type="button"
+                    className={cn(
+                      "flex h-8 min-w-0 flex-1 items-center gap-2 pr-2 text-left",
+                      node.children.length > 0 || depth > 0
+                        ? "rounded-r-md"
+                        : "rounded-md pl-2",
+                    )}
+                    onClick={() => selectCategory(category.id)}
+                  >
+                    <span
+                      className="h-1.5 w-1.5 shrink-0 rounded-full"
+                      style={{
+                        backgroundColor: active
+                          ? "var(--df-primary)"
+                          : "var(--df-text-dimmed)",
+                        opacity: active ? 1 : 0.6,
+                      }}
+                    />
+                    <span className="min-w-0 flex-1 truncate font-medium">
+                      {category.name}
+                    </span>
+                    <span
+                      className="shrink-0 rounded px-1.5 py-0.5 text-[0.625rem] leading-none"
+                      style={{
+                        backgroundColor: active
+                          ? "color-mix(in_srgb,var(--df-primary)_14%,transparent)"
+                          : "var(--df-bg-hover)",
+                        color: active
+                          ? "var(--df-primary)"
+                          : "var(--df-text-dimmed)",
+                      }}
+                    >
+                      {node.totalCount}
+                    </span>
+                  </button>
+                </div>
+              </div>
+            </ContextMenuTrigger>
+            {savedCategory && (
+              <ContextMenuContent className="min-w-[140px]">
+                <ContextMenuItem
+                  className="text-xs gap-2"
+                  onClick={() => openNewCategoryDialog(savedCategory.id)}
+                >
+                  <MdFolder className="text-[0.875rem]" />
+                  {t("quickCommands.addCategory")}
+                </ContextMenuItem>
+                <ContextMenuItem
+                  className="text-xs gap-2"
+                  onClick={() => openNewCommandForCategory(savedCategory.id)}
+                >
+                  <MdTerminal className="text-[0.875rem]" />
+                  {t("quickCommands.addCommand")}
+                </ContextMenuItem>
+                <ContextMenuSeparator />
+                <ContextMenuItem
+                  className="text-xs gap-2"
+                  disabled={!moveState.canMoveUp}
+                  onClick={() => handleMoveCategory(savedCategory.id, "up")}
+                >
+                  <MdKeyboardArrowUp className="text-[0.875rem]" />
+                  {t("dialog.moveUp")}
+                </ContextMenuItem>
+                <ContextMenuItem
+                  className="text-xs gap-2"
+                  disabled={!moveState.canMoveDown}
+                  onClick={() =>
+                    handleMoveCategory(savedCategory.id, "down")
+                  }
+                >
+                  <MdKeyboardArrowDown className="text-[0.875rem]" />
+                  {t("dialog.moveDown")}
+                </ContextMenuItem>
+                <ContextMenuSeparator />
+                <ContextMenuItem
+                  className="text-xs gap-2"
+                  onClick={() => setCategoryToRename(savedCategory)}
+                >
+                  <MdEdit className="text-[0.875rem]" />
+                  {t("quickCommands.edit")}
+                </ContextMenuItem>
+                <ContextMenuItem
+                  className="text-xs gap-2 text-destructive focus:text-destructive"
+                  onClick={() => setCategoryToDelete(savedCategory)}
+                >
+                  <MdDelete className="text-[0.875rem]" />
+                  {t("quickCommands.delete")}
+                </ContextMenuItem>
+              </ContextMenuContent>
+            )}
+          </ContextMenu>
+        );
+      })}
+
+      {(() => {
+        const active = selectedCategory === "uncategorized";
+        return (
+          <ContextMenu>
+            <ContextMenuTrigger asChild>
+              <button
+                type="button"
+                className="group flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-2 text-left text-xs transition-colors hover:bg-[var(--df-bg-hover)]"
+                style={{
+                  backgroundColor: active
+                    ? "var(--df-bg-hover)"
+                    : "transparent",
+                  color: active ? "var(--df-primary)" : "var(--df-text)",
+                }}
+                onClick={() => selectCategory("uncategorized")}
+              >
+                <span
+                  className="h-1.5 w-1.5 shrink-0 rounded-full"
+                  style={{
+                    backgroundColor: active
+                      ? "var(--df-primary)"
+                      : "var(--df-text-dimmed)",
+                    opacity: active ? 1 : 0.6,
+                  }}
+                />
+                <span className="min-w-0 flex-1 truncate font-medium">
+                  {t("quickCommands.uncategorized")}
+                </span>
+                <span
+                  className="shrink-0 rounded px-1.5 py-0.5 text-[0.625rem] leading-none"
+                  style={{
+                    backgroundColor: active
+                      ? "color-mix(in_srgb,var(--df-primary)_14%,transparent)"
+                      : "var(--df-bg-hover)",
+                    color: active
+                      ? "var(--df-primary)"
+                      : "var(--df-text-dimmed)",
+                  }}
+                >
+                  {uncategorizedCount}
+                </span>
+              </button>
+            </ContextMenuTrigger>
+            {renderCategoryContextMenuContent(null)}
+          </ContextMenu>
+        );
+      })()}
+    </div>
+  );
   return (
     <TooltipProvider delayDuration={500}>
       <div
         className="nyaterm-wallpaper-transparent-surface h-full flex flex-col"
         style={{ backgroundColor: "var(--df-bg-panel)" }}
       >
-        <PanelHeader
-          title={t("panel.quickCommands")}
-          meta={
-            commands.length > 0 ? (
-              <span
-                className="text-[0.6875rem]"
-                style={{ color: "var(--df-text-dimmed)" }}
-              >
-                {headerMetaText}
-              </span>
-            ) : null
-          }
-          actions={
-            <>
-              <div className="flex min-w-0 items-center gap-1">
-                <div className="relative w-[9rem] shrink-0 transition-colors focus-within:text-[var(--df-primary)] text-[var(--df-text-dimmed)]">
-                  <MdSearch className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-[0.875rem]" />
-                  <Input
-                    value={search}
-                    onChange={(event) => setSearch(event.target.value)}
-                    placeholder={t("quickCommands.search")}
-                    className={`${headerControlClassName} pl-7 pr-7 placeholder:text-[var(--df-text-dimmed)] focus-visible:ring-1 focus-visible:ring-[var(--df-primary)] focus-visible:bg-transparent`}
-                  />
-                  {search && (
-                    <button
-                      className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 transition-colors hover:text-[var(--df-text)] text-[var(--df-text-dimmed)]"
-                      onClick={() => setSearch("")}
-                    >
-                      <MdClose className="text-[0.75rem]" />
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              <span
-                aria-hidden
-                className="mx-1 h-4 w-px shrink-0 bg-border/50"
-              />
-
-              <DropdownMenu>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        className="h-6 w-6 shrink-0 rounded-md p-0 transition-colors hover:bg-[var(--df-bg-hover)]"
-                        style={{
-                          color:
-                            sortMode !== "created"
-                              ? "var(--df-primary)"
-                              : "var(--df-text-muted)",
-                        }}
-                        aria-label={t("quickCommands.sort")}
-                      >
-                        <MdSort className="text-[1.05rem]" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">
-                    {t("quickCommands.sort")}
-                  </TooltipContent>
-                </Tooltip>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuRadioGroup
-                    value={sortMode}
-                    onValueChange={(value) =>
-                      setSortMode(normalizeQuickCommandSortMode(value))
-                    }
-                  >
-                    <DropdownMenuRadioItem value="created" className="text-xs">
-                      {t("quickCommands.sortByCreated")}
-                    </DropdownMenuRadioItem>
-                    <DropdownMenuRadioItem value="name" className="text-xs">
-                      {t("quickCommands.sortByName")}
-                    </DropdownMenuRadioItem>
-                    <DropdownMenuRadioItem value="useCount" className="text-xs">
-                      {t("quickCommands.sortByUseCount")}
-                    </DropdownMenuRadioItem>
-                    <DropdownMenuRadioItem value="custom" className="text-xs">
-                      {t("quickCommands.sortByCustom")}
-                    </DropdownMenuRadioItem>
-                  </DropdownMenuRadioGroup>
-                </DropdownMenuContent>
-              </DropdownMenu>
-
-              <DropdownMenu>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        className="h-6 w-6 shrink-0 rounded-md p-0 transition-colors hover:bg-[var(--df-bg-hover)]"
-                        style={{ color: "var(--df-primary)" }}
-                        aria-label={t("quickCommands.viewMode")}
-                      >
-                        {viewMode === "tile" ? (
-                          <MdGridView className="text-[1rem]" />
-                        ) : viewMode === "compact" ? (
-                          <MdViewList className="text-[1.05rem]" />
-                        ) : (
-                          <MdFormatListBulleted className="text-[1rem]" />
-                        )}
-                      </Button>
-                    </DropdownMenuTrigger>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">
-                    {t("quickCommands.viewMode")}
-                  </TooltipContent>
-                </Tooltip>
-                <DropdownMenuContent align="end" className="min-w-[150px]">
-                  <DropdownMenuRadioGroup
-                    value={viewMode}
-                    onValueChange={(value) =>
-                      setViewMode(normalizeQuickCommandViewMode(value))
-                    }
-                  >
-                    <DropdownMenuRadioItem value="list" className="text-xs">
-                      <MdFormatListBulleted className="text-[0.95rem]" />
-                      {t("quickCommands.listMode")}
-                    </DropdownMenuRadioItem>
-                    <DropdownMenuRadioItem value="compact" className="text-xs">
-                      <MdViewList className="text-[1rem]" />
-                      {t("quickCommands.compactListMode")}
-                    </DropdownMenuRadioItem>
-                    <DropdownMenuRadioItem value="tile" className="text-xs">
-                      <MdGridView className="text-[0.95rem]" />
-                      {t("quickCommands.tileMode")}
-                    </DropdownMenuRadioItem>
-                  </DropdownMenuRadioGroup>
-                </DropdownMenuContent>
-              </DropdownMenu>
-
-              <span
-                aria-hidden
-                className="mx-1 h-4 w-px shrink-0 bg-border/50"
-              />
-
-              <div className="flex items-center gap-1">
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      className="h-6 w-6 shrink-0 rounded-md p-0 transition-colors hover:bg-[var(--df-bg-hover)]"
-                      style={{ color: "var(--df-text-muted)" }}
-                      aria-label={t("quickCommands.addCommand")}
-                      onClick={() => openQuickCommand()}
-                    >
-                      <MdAdd className="text-[1.05rem]" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">
-                    {t("quickCommands.addCommand")}
-                  </TooltipContent>
-                </Tooltip>
-
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      className="h-6 w-6 shrink-0 rounded-md p-0 transition-colors hover:bg-[var(--df-bg-hover)]"
-                      style={{ color: "var(--df-text-muted)" }}
-                      aria-label={t("quickCommands.export")}
-                      onClick={() => void handleExportQuickCommands()}
-                    >
-                      <BiExport className="text-[1.05rem]" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">
-                    {t("quickCommands.export")}
-                  </TooltipContent>
-                </Tooltip>
-
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      className="h-6 w-6 shrink-0 rounded-md p-0 transition-colors hover:bg-[var(--df-bg-hover)]"
-                      style={{ color: "var(--df-text-muted)" }}
-                      aria-label={t("quickCommands.import")}
-                      onClick={() => setImportDialogOpen(true)}
-                    >
-                      <BiImport className="text-[1.05rem]" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">
-                    {t("quickCommands.import")}
-                  </TooltipContent>
-                </Tooltip>
-              </div>
-
-              <span
-                aria-hidden
-                className="mx-1 h-4 w-px shrink-0 bg-border/50"
-              />
-
-              <Popover open={aiPopoverOpen} onOpenChange={setAiPopoverOpen}>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <PopoverTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        className="h-6 w-6 shrink-0 rounded-md p-0 transition-colors hover:bg-[var(--df-bg-hover)]"
-                        style={{ color: "var(--df-text-muted)" }}
-                        aria-label={t("ai.generateCommand")}
-                      >
-                        <MdAutoAwesome className="text-[1.05rem]" />
-                      </Button>
-                    </PopoverTrigger>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">
-                    {t("ai.generateCommand")}
-                  </TooltipContent>
-                </Tooltip>
-                <PopoverContent align="end" className="w-80 p-3">
-                  <div className="space-y-2">
-                    <div className="text-xs font-medium">
-                      {t("ai.generateCommand")}
-                    </div>
-                    <Input
-                      value={aiPrompt}
-                      disabled={sendDisabled}
-                      onChange={(event) => setAiPrompt(event.target.value)}
-                      placeholder={t("ai.quickPrompt")}
-                      className="h-8 text-xs"
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          event.preventDefault();
-                          handleAiPromptSubmit();
-                        }
-                      }}
-                    />
-                    <div className="flex justify-end">
-                      <Button
-                        size="xs"
-                        disabled={sendDisabled || !aiPrompt.trim()}
-                        onClick={handleAiPromptSubmit}
-                      >
-                        <MdAutoAwesome />
-                        {t("ai.generate")}
-                      </Button>
-                    </div>
-                  </div>
-                </PopoverContent>
-              </Popover>
-            </>
-          }
-        />
-
-        <div className="flex min-h-0 flex-1">
-          <aside
-            className="shrink-0 overflow-y-auto overflow-x-hidden p-1.5 terminal-scroll"
-            style={{ width: categorySidebarWidth }}
-            onDragOver={handleCategoryRootDragOver}
-            onDrop={handleCategoryRootDrop}
+        <div
+          className="nyaterm-wallpaper-transparent-surface flex min-h-9 shrink-0 items-center justify-between gap-3 border-b px-3"
+          style={{
+            borderColor: "var(--df-border)",
+            backgroundColor: "var(--df-bg-section-header)",
+          }}
+        >
+          <div
+            ref={headerContentRef}
+            className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden"
           >
-            <div className="flex flex-col gap-1">
-              {(() => {
-                const active = selectedCategory === "all";
-                return (
-                  <ContextMenu>
-                    <ContextMenuTrigger asChild>
-                      <button
-                        type="button"
-                        className="group flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-2 text-left text-xs transition-colors hover:bg-[var(--df-bg-hover)]"
-                        style={{
-                          backgroundColor: active
-                            ? "var(--df-bg-hover)"
-                            : "transparent",
-                          color: active ? "var(--df-primary)" : "var(--df-text)",
-                        }}
-                        onClick={() => setSelectedCategory("all")}
-                      >
-                        <span
-                          className="h-1.5 w-1.5 shrink-0 rounded-full"
-                          style={{
-                            backgroundColor: active
-                              ? "var(--df-primary)"
-                              : "var(--df-text-dimmed)",
-                            opacity: active ? 1 : 0.6,
-                          }}
-                        />
-                        <span className="min-w-0 flex-1 truncate font-medium">
-                          {t("quickCommands.allCategories")}
-                        </span>
-                        <span
-                          className="shrink-0 rounded px-1.5 py-0.5 text-[0.625rem] leading-none"
-                          style={{
-                            backgroundColor: active
-                              ? "color-mix(in_srgb,var(--df-primary)_14%,transparent)"
-                              : "var(--df-bg-hover)",
-                            color: active
-                              ? "var(--df-primary)"
-                              : "var(--df-text-dimmed)",
-                          }}
-                        >
-                          {commands.length}
-                        </span>
-                      </button>
-                    </ContextMenuTrigger>
-                    {renderCategoryContextMenuContent(null)}
-                  </ContextMenu>
-                );
-              })()}
+            {headerCommands.map((cmd) => renderCommandTile(cmd))}
+          </div>
 
-              {categoryDragTarget?.categoryId === null && (
-                <div className="h-0.5 rounded-full bg-primary/70" />
-              )}
-
-              {visibleCategoryRows.map(({ node, depth }) => {
-                const category = node.category;
-                const active = selectedCategory === category.id;
-                const expanded = expandedCategoryIds.has(category.id);
-                const savedCategory = savedCategories.find(
-                  (item) => item.id === category.id,
-                );
-                const moveState = savedCategory
-                  ? getQuickCommandCategoryMoveState(
-                      savedCategories,
-                      savedCategory.id,
-                    )
-                  : { canMoveUp: false, canMoveDown: false };
-                const categoryTargetPosition =
-                  categoryDragTarget?.categoryId === category.id
-                    ? categoryDragTarget.position
-                    : null;
-                const categoryIsDragging = draggingCategoryId === category.id;
-
-                return (
-                  <ContextMenu key={category.id}>
-                    <ContextMenuTrigger asChild disabled={!savedCategory}>
-                      <div className="relative">
-                        {categoryTargetPosition === "before" && (
-                          <span className="absolute left-1 right-1 top-0 z-10 h-0.5 rounded-full bg-primary/70" />
-                        )}
-                        {categoryTargetPosition === "after" && (
-                          <span className="absolute bottom-0 left-1 right-1 z-10 h-0.5 rounded-full bg-primary/70" />
-                        )}
-                        <div
-                          draggable={!!savedCategory}
-                          onDragStart={(event) => {
-                            if (savedCategory)
-                              handleCategoryDragStart(event, savedCategory.id);
-                          }}
-                          onDragOver={(event) =>
-                            handleCategoryDragOver(event, category.id)
-                          }
-                          onDrop={(event) => handleCategoryDrop(event, category.id)}
-                          onDragEnd={resetCategoryDrag}
-                          className={cn(
-                            "group flex h-8 w-full min-w-0 items-center rounded-md text-xs transition-colors hover:bg-[var(--df-bg-hover)]",
-                            savedCategory && "cursor-grab active:cursor-grabbing",
-                            categoryIsDragging && "opacity-50",
-                            categoryTargetPosition === "inside" &&
-                              "ring-1 ring-primary/70",
-                          )}
-                          style={{
-                            backgroundColor: active
-                              ? "var(--df-bg-hover)"
-                              : "transparent",
-                            color: active
-                              ? "var(--df-primary)"
-                              : "var(--df-text)",
-                            paddingLeft: `${Math.min(depth, 4) * 0.7 + 0.25}rem`,
-                          }}
-                        >
-                          {node.children.length > 0 ? (
-                            <button
-                              type="button"
-                              className="flex h-7 w-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground"
-                              aria-label={category.name}
-                              onClick={(event) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                toggleCategoryExpanded(category.id);
-                              }}
-                            >
-                              <MdChevronRight
-                                className={cn(
-                                  "text-[0.875rem] transition-transform",
-                                  expanded && "rotate-90",
-                                )}
-                              />
-                            </button>
-                          ) : depth > 0 ? (
-                            <span className="h-7 w-5 shrink-0" />
-                          ) : null}
-                          <button
-                            type="button"
-                            className={cn(
-                              "flex h-8 min-w-0 flex-1 items-center gap-2 pr-2 text-left",
-                              node.children.length > 0 || depth > 0
-                                ? "rounded-r-md"
-                                : "rounded-md pl-2",
-                            )}
-                            onClick={() => setSelectedCategory(category.id)}
-                          >
-                            <span
-                              className="h-1.5 w-1.5 shrink-0 rounded-full"
-                              style={{
-                                backgroundColor: active
-                                  ? "var(--df-primary)"
-                                  : "var(--df-text-dimmed)",
-                                opacity: active ? 1 : 0.6,
-                              }}
-                            />
-                            <span className="min-w-0 flex-1 truncate font-medium">
-                              {category.name}
-                            </span>
-                            <span
-                              className="shrink-0 rounded px-1.5 py-0.5 text-[0.625rem] leading-none"
-                              style={{
-                                backgroundColor: active
-                                  ? "color-mix(in_srgb,var(--df-primary)_14%,transparent)"
-                                  : "var(--df-bg-hover)",
-                                color: active
-                                  ? "var(--df-primary)"
-                                  : "var(--df-text-dimmed)",
-                              }}
-                            >
-                              {node.totalCount}
-                            </span>
-                          </button>
-                        </div>
-                      </div>
-                    </ContextMenuTrigger>
-                    {savedCategory && (
-                      <ContextMenuContent className="min-w-[140px]">
-                        <ContextMenuItem
-                          className="text-xs gap-2"
-                          onClick={() => openNewCategoryDialog(savedCategory.id)}
-                        >
-                          <MdFolder className="text-[0.875rem]" />
-                          {t("quickCommands.addCategory")}
-                        </ContextMenuItem>
-                        <ContextMenuItem
-                          className="text-xs gap-2"
-                          onClick={() => openNewCommandForCategory(savedCategory.id)}
-                        >
-                          <MdTerminal className="text-[0.875rem]" />
-                          {t("quickCommands.addCommand")}
-                        </ContextMenuItem>
-                        <ContextMenuSeparator />
-                        <ContextMenuItem
-                          className="text-xs gap-2"
-                          disabled={!moveState.canMoveUp}
-                          onClick={() => handleMoveCategory(savedCategory.id, "up")}
-                        >
-                          <MdKeyboardArrowUp className="text-[0.875rem]" />
-                          {t("dialog.moveUp")}
-                        </ContextMenuItem>
-                        <ContextMenuItem
-                          className="text-xs gap-2"
-                          disabled={!moveState.canMoveDown}
-                          onClick={() =>
-                            handleMoveCategory(savedCategory.id, "down")
-                          }
-                        >
-                          <MdKeyboardArrowDown className="text-[0.875rem]" />
-                          {t("dialog.moveDown")}
-                        </ContextMenuItem>
-                        <ContextMenuSeparator />
-                        <ContextMenuItem
-                          className="text-xs gap-2"
-                          onClick={() => setCategoryToRename(savedCategory)}
-                        >
-                          <MdEdit className="text-[0.875rem]" />
-                          {t("quickCommands.edit")}
-                        </ContextMenuItem>
-                        <ContextMenuItem
-                          className="text-xs gap-2 text-destructive focus:text-destructive"
-                          onClick={() => setCategoryToDelete(savedCategory)}
-                        >
-                          <MdDelete className="text-[0.875rem]" />
-                          {t("quickCommands.delete")}
-                        </ContextMenuItem>
-                      </ContextMenuContent>
-                    )}
-                  </ContextMenu>
-                );
-              })}
-
-              {(() => {
-                const active = selectedCategory === "uncategorized";
-                return (
-                  <ContextMenu>
-                    <ContextMenuTrigger asChild>
-                      <button
-                        type="button"
-                        className="group flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-2 text-left text-xs transition-colors hover:bg-[var(--df-bg-hover)]"
-                        style={{
-                          backgroundColor: active
-                            ? "var(--df-bg-hover)"
-                            : "transparent",
-                          color: active ? "var(--df-primary)" : "var(--df-text)",
-                        }}
-                        onClick={() => setSelectedCategory("uncategorized")}
-                      >
-                        <span
-                          className="h-1.5 w-1.5 shrink-0 rounded-full"
-                          style={{
-                            backgroundColor: active
-                              ? "var(--df-primary)"
-                              : "var(--df-text-dimmed)",
-                            opacity: active ? 1 : 0.6,
-                          }}
-                        />
-                        <span className="min-w-0 flex-1 truncate font-medium">
-                          {t("quickCommands.uncategorized")}
-                        </span>
-                        <span
-                          className="shrink-0 rounded px-1.5 py-0.5 text-[0.625rem] leading-none"
-                          style={{
-                            backgroundColor: active
-                              ? "color-mix(in_srgb,var(--df-primary)_14%,transparent)"
-                              : "var(--df-bg-hover)",
-                            color: active
-                              ? "var(--df-primary)"
-                              : "var(--df-text-dimmed)",
-                          }}
-                        >
-                          {uncategorizedCount}
-                        </span>
-                      </button>
-                    </ContextMenuTrigger>
-                    {renderCategoryContextMenuContent(null)}
-                  </ContextMenu>
-                );
-              })()}
-            </div>
-          </aside>
-          <ResizeHandle
-            direction="horizontal"
-            onResize={resizeCategorySidebar}
-            className="opacity-70 hover:opacity-100 active:opacity-100"
-          />
-
-          <div className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden terminal-scroll p-1.5">
-            <div
-              className={cn(
-                "min-w-0 gap-1.5",
-                viewMode === "tile"
-                  ? "flex flex-wrap content-start"
-                  : "flex flex-col",
-              )}
+          <div className="flex shrink-0 items-center gap-1">
+            <Popover
+              open={categoryPopoverOpen}
+              onOpenChange={setCategoryPopoverOpen}
             >
-              {filteredCommands.length === 0 ? (
-                <div className="mx-auto mt-8 flex w-full max-w-md flex-col items-center justify-center rounded-lg border border-dashed p-4 text-muted-foreground opacity-70">
-                  <MdTerminal className="text-2xl mb-2" />
-                  <span className="text-xs mb-3">
-                    {t("quickCommands.noCommandsFound")}
-                  </span>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      className="h-6 w-6 shrink-0 rounded-md p-0 transition-colors hover:bg-[var(--df-bg-hover)]"
+                      style={{
+                        color:
+                          selectedCategory !== "all"
+                            ? "var(--df-primary)"
+                            : "var(--df-text-muted)",
+                      }}
+                      aria-label={t("quickCommands.category")}
+                    >
+                      <MdFolder className="text-[1.05rem]" />
+                    </Button>
+                  </PopoverTrigger>
+                </TooltipTrigger>
+                <TooltipContent side="top">
+                  {t("quickCommands.category")}
+                </TooltipContent>
+              </Tooltip>
+              <PopoverContent
+                align="end"
+                className="w-[220px] p-2"
+                onDragOver={handleCategoryRootDragOver}
+                onDrop={handleCategoryRootDrop}
+              >
+                {renderCategoryTree()}
+              </PopoverContent>
+            </Popover>
+
+            <span
+              aria-hidden
+              className="mx-1 h-4 w-px shrink-0 bg-border/50"
+            />
+
+            <div className="flex min-w-0 items-center gap-1">
+              <div className="relative w-[9rem] shrink-0 transition-colors focus-within:text-[var(--df-primary)] text-[var(--df-text-dimmed)]">
+                <MdSearch className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-[0.875rem]" />
+                <Input
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder={t("quickCommands.search")}
+                  className={`${headerControlClassName} pl-7 pr-7 placeholder:text-[var(--df-text-dimmed)] focus-visible:ring-1 focus-visible:ring-[var(--df-primary)] focus-visible:bg-transparent`}
+                />
+                {search && (
+                  <button
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 transition-colors hover:text-[var(--df-text)] text-[var(--df-text-dimmed)]"
+                    onClick={() => setSearch("")}
+                  >
+                    <MdClose className="text-[0.75rem]" />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <span
+              aria-hidden
+              className="mx-1 h-4 w-px shrink-0 bg-border/50"
+            />
+
+            <DropdownMenu>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      className="h-6 w-6 shrink-0 rounded-md p-0 transition-colors hover:bg-[var(--df-bg-hover)]"
+                      style={{
+                        color:
+                          sortMode !== "created"
+                            ? "var(--df-primary)"
+                            : "var(--df-text-muted)",
+                      }}
+                      aria-label={t("quickCommands.sort")}
+                    >
+                      <MdSort className="text-[1.05rem]" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                </TooltipTrigger>
+                <TooltipContent side="top">
+                  {t("quickCommands.sort")}
+                </TooltipContent>
+              </Tooltip>
+              <DropdownMenuContent align="end">
+                <DropdownMenuRadioGroup
+                  value={sortMode}
+                  onValueChange={(value) =>
+                    setSortMode(normalizeQuickCommandSortMode(value))
+                  }
+                >
+                  <DropdownMenuRadioItem value="created" className="text-xs">
+                    {t("quickCommands.sortByCreated")}
+                  </DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="name" className="text-xs">
+                    {t("quickCommands.sortByName")}
+                  </DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="useCount" className="text-xs">
+                    {t("quickCommands.sortByUseCount")}
+                  </DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="custom" className="text-xs">
+                    {t("quickCommands.sortByCustom")}
+                  </DropdownMenuRadioItem>
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            <DropdownMenu>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      className="h-6 w-6 shrink-0 rounded-md p-0 transition-colors hover:bg-[var(--df-bg-hover)]"
+                      style={{ color: "var(--df-primary)" }}
+                      aria-label={t("quickCommands.viewMode")}
+                    >
+                      {viewMode === "tile" ? (
+                        <MdGridView className="text-[1rem]" />
+                      ) : viewMode === "compact" ? (
+                        <MdViewList className="text-[1.05rem]" />
+                      ) : (
+                        <MdFormatListBulleted className="text-[1rem]" />
+                      )}
+                    </Button>
+                  </DropdownMenuTrigger>
+                </TooltipTrigger>
+                <TooltipContent side="top">
+                  {t("quickCommands.viewMode")}
+                </TooltipContent>
+              </Tooltip>
+              <DropdownMenuContent align="end" className="min-w-[150px]">
+                <DropdownMenuRadioGroup
+                  value={viewMode}
+                  onValueChange={(value) =>
+                    setViewMode(normalizeQuickCommandViewMode(value))
+                  }
+                >
+                  <DropdownMenuRadioItem value="list" className="text-xs">
+                    <MdFormatListBulleted className="text-[0.95rem]" />
+                    {t("quickCommands.listMode")}
+                  </DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="compact" className="text-xs">
+                    <MdViewList className="text-[1rem]" />
+                    {t("quickCommands.compactListMode")}
+                  </DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="tile" className="text-xs">
+                    <MdGridView className="text-[0.95rem]" />
+                    {t("quickCommands.tileMode")}
+                  </DropdownMenuRadioItem>
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            <span
+              aria-hidden
+              className="mx-1 h-4 w-px shrink-0 bg-border/50"
+            />
+
+            <div className="flex items-center gap-1">
+              <Tooltip>
+                <TooltipTrigger asChild>
                   <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 text-xs bg-muted/20 hover:bg-muted"
+                    variant="ghost"
+                    size="icon-sm"
+                    className="h-6 w-6 shrink-0 rounded-md p-0 transition-colors hover:bg-[var(--df-bg-hover)]"
+                    style={{ color: "var(--df-text-muted)" }}
+                    aria-label={t("quickCommands.addCommand")}
                     onClick={() => openQuickCommand()}
                   >
-                    <MdAdd className="mr-1 text-sm" />
-                    {t("quickCommands.addCommand")}
+                    <MdAdd className="text-[1.05rem]" />
                   </Button>
-                </div>
-              ) : (
-                filteredCommands.map((cmd) =>
-                  viewMode === "tile"
-                    ? renderCommandTile(cmd)
-                    : viewMode === "compact"
-                      ? renderCommandCompactItem(cmd)
-                      : renderCommandListItem(cmd),
-                )
-              )}
+                </TooltipTrigger>
+                <TooltipContent side="top">
+                  {t("quickCommands.addCommand")}
+                </TooltipContent>
+              </Tooltip>
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    className="h-6 w-6 shrink-0 rounded-md p-0 transition-colors hover:bg-[var(--df-bg-hover)]"
+                    style={{ color: "var(--df-text-muted)" }}
+                    aria-label={t("quickCommands.export")}
+                    onClick={() => void handleExportQuickCommands()}
+                  >
+                    <BiExport className="text-[1.05rem]" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top">
+                  {t("quickCommands.export")}
+                </TooltipContent>
+              </Tooltip>
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    className="h-6 w-6 shrink-0 rounded-md p-0 transition-colors hover:bg-[var(--df-bg-hover)]"
+                    style={{ color: "var(--df-text-muted)" }}
+                    aria-label={t("quickCommands.import")}
+                    onClick={() => setImportDialogOpen(true)}
+                  >
+                    <BiImport className="text-[1.05rem]" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top">
+                  {t("quickCommands.import")}
+                </TooltipContent>
+              </Tooltip>
             </div>
+
+            <span
+              aria-hidden
+              className="mx-1 h-4 w-px shrink-0 bg-border/50"
+            />
+
+            <Popover open={aiPopoverOpen} onOpenChange={setAiPopoverOpen}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      className="h-6 w-6 shrink-0 rounded-md p-0 transition-colors hover:bg-[var(--df-bg-hover)]"
+                      style={{ color: "var(--df-text-muted)" }}
+                      aria-label={t("ai.generateCommand")}
+                    >
+                      <MdAutoAwesome className="text-[1.05rem]" />
+                    </Button>
+                  </PopoverTrigger>
+                </TooltipTrigger>
+                <TooltipContent side="top">
+                  {t("ai.generateCommand")}
+                </TooltipContent>
+              </Tooltip>
+              <PopoverContent align="end" className="w-80 p-3">
+                <div className="space-y-2">
+                  <div className="text-xs font-medium">
+                    {t("ai.generateCommand")}
+                  </div>
+                  <Input
+                    value={aiPrompt}
+                    disabled={sendDisabled}
+                    onChange={(event) => setAiPrompt(event.target.value)}
+                    placeholder={t("ai.quickPrompt")}
+                    className="h-8 text-xs"
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        handleAiPromptSubmit();
+                      }
+                    }}
+                  />
+                  <div className="flex justify-end">
+                    <Button
+                      size="xs"
+                      disabled={sendDisabled || !aiPrompt.trim()}
+                      onClick={handleAiPromptSubmit}
+                    >
+                      <MdAutoAwesome />
+                      {t("ai.generate")}
+                    </Button>
+                  </div>
+                </div>
+              </PopoverContent>
+            </Popover>
+          </div>
+        </div>
+
+        <div
+          ref={measureContainerRef}
+          className="pointer-events-none invisible absolute left-0 top-0 flex flex-wrap gap-1.5 p-1.5"
+          aria-hidden="true"
+        >
+          {filteredCommands.map((cmd) => (
+            <div key={cmd.id} data-command-id={cmd.id} className="shrink-0">
+              {renderCommandTile(cmd)}
+            </div>
+          ))}
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden terminal-scroll p-1.5">
+          <div
+            className={cn(
+              "min-w-0 gap-1.5",
+              viewMode === "tile"
+                ? "flex flex-wrap content-start"
+                : "flex flex-col",
+            )}
+          >
+            {filteredCommands.length === 0 ? (
+              <div className="mx-auto mt-8 flex w-full max-w-md flex-col items-center justify-center rounded-lg border border-dashed p-4 text-muted-foreground opacity-70">
+                <MdTerminal className="text-2xl mb-2" />
+                <span className="text-xs mb-3">
+                  {t("quickCommands.noCommandsFound")}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs bg-muted/20 hover:bg-muted"
+                  onClick={() => openQuickCommand()}
+                >
+                  <MdAdd className="mr-1 text-sm" />
+                  {t("quickCommands.addCommand")}
+                </Button>
+              </div>
+            ) : (
+              overflowCommands.map((cmd) =>
+                viewMode === "tile"
+                  ? renderCommandTile(cmd)
+                  : viewMode === "compact"
+                    ? renderCommandCompactItem(cmd)
+                    : renderCommandListItem(cmd),
+              )
+            )}
           </div>
         </div>
         {promptCmd && (

@@ -1,0 +1,223 @@
+name: Build Windows x64
+
+# Manual-only workflow: builds the Windows x64 installer (NSIS + MSI) and a
+# signed portable zip, then publishes them to a GitHub release.
+#
+# Trigger: GitHub → Actions → "Build Windows x64" → Run workflow.
+# Provide a tag (e.g. v1.2.3-win or windows-x64-2026-09-22); the same tag is
+# reused for the GitHub release so you can find each build easily.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag for this build, e.g. v1.2.3-win or windows-x64-2026-09-22"
+        required: true
+        default: windows-x64
+        type: string
+      prerelease:
+        description: "Mark the GitHub release as a prerelease"
+        required: false
+        default: true
+        type: boolean
+      overwrite:
+        description: "Delete any existing release (and git tag) with the same name before building"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-windows-x64-${{ github.event.inputs.tag }}
+  cancel-in-progress: true
+
+env:
+  APP_NAME: NyaTerm
+
+jobs:
+  build-windows-x64:
+    name: Build Windows x64 installer + portable
+    runs-on: windows-latest
+
+    env:
+      RELEASE_TAG: ${{ github.event.inputs.tag }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            ./src-tauri -> target
+          key: windows-x64-release
+          cache-on-failure: false
+        env:
+          RUST_CACHE_COMPRESS: true
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 9
+          run_install: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Prepare Tauri updater signing key
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY_B64: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_B64 }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY_B64:-}" ]; then
+            echo "TAURI_SIGNING_PRIVATE_KEY_B64 is empty"
+            exit 1
+          fi
+
+          node <<'NODE'
+          const fs = require('fs');
+          const os = require('os');
+          const path = require('path');
+          const crypto = require('crypto');
+
+          const keyB64 = process.env.TAURI_SIGNING_PRIVATE_KEY_B64 || '';
+          const runnerTemp = process.env.RUNNER_TEMP || os.tmpdir();
+          const keyPath = path.join(runnerTemp, 'tauri-updater.key');
+          const keyText = Buffer.from(keyB64, 'base64').toString('utf8').trim();
+          const envDelimiter = `TAURI_KEY_${crypto.randomUUID().replace(/-/g, '')}`;
+
+          fs.writeFileSync(keyPath, keyText);
+          fs.appendFileSync(
+            process.env.GITHUB_ENV,
+            `TAURI_SIGNING_PRIVATE_KEY<<${envDelimiter}\n${keyText}\n${envDelimiter}\n`
+          );
+
+          console.log(`Tauri updater signing key prepared at: ${keyPath}`);
+          NODE
+
+      - name: Verify GitHub Gist OAuth Client ID
+        shell: bash
+        env:
+          NYATERM_GITHUB_GIST_CLIENT_ID: ${{ vars.NYATERM_GITHUB_GIST_CLIENT_ID }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${NYATERM_GITHUB_GIST_CLIENT_ID:-}" ]; then
+            echo "NYATERM_GITHUB_GIST_CLIENT_ID repository variable is required for release builds."
+            exit 1
+          fi
+
+      - name: Remove existing release/tag for overwrite
+        if: ${{ github.event.inputs.overwrite == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Deleting existing release for tag ${TAG}"
+            gh release delete "${TAG}" --repo "${GITHUB_REPOSITORY}" --yes
+          else
+            echo "No existing release for tag ${TAG}; nothing to delete."
+          fi
+
+          git fetch --tags --force
+
+          if git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Deleting existing git tag ${TAG}"
+            git tag -d "${TAG}" || true
+            git push --delete origin "${TAG}" || true
+          fi
+
+      - name: Build Tauri app (NSIS + MSI)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          NYATERM_GITHUB_GIST_CLIENT_ID: ${{ vars.NYATERM_GITHUB_GIST_CLIENT_ID }}
+        with:
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: NyaTerm ${{ env.RELEASE_TAG }}
+          releaseBody: |
+            Windows x64 build generated by the manual "Build Windows x64" workflow.
+
+            Includes:
+            - NSIS installer (*-setup.exe)
+            - MSI installer (*.msi)
+            - Signed portable zip (*_portable.zip)
+          releaseDraft: false
+          prerelease: ${{ github.event.inputs.prerelease == 'true' }}
+          includeUpdaterJson: false
+          args: --bundles nsis,msi
+
+      - name: Package and sign Windows portable zip
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $version = $env:RELEASE_TAG -replace '^v', ''
+          $target = "x86_64-pc-windows-msvc"
+          $arch = "x64"
+          $releaseDir = "src-tauri/target/release"
+
+          $exe = Join-Path $releaseDir "nyaterm.exe"
+          if (-not (Test-Path $exe)) {
+            $exe = Get-ChildItem -Path $releaseDir -Filter "*.exe" |
+              Where-Object { $_.Name -notmatch 'build[-_]script' } |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+
+          if (-not $exe -or -not (Test-Path $exe)) {
+            throw "Release executable not found in $releaseDir"
+          }
+
+          $sidecar = Join-Path "src-tauri/binaries" "nyaterm-mcp-$target.exe"
+          if (-not (Test-Path $sidecar)) {
+            throw "MCP sidecar not found at $sidecar"
+          }
+
+          $assetName = "NyaTerm_${version}_windows_${arch}_portable.zip"
+          $portableRoot = Join-Path $env:RUNNER_TEMP "NyaTerm-portable-package"
+          $portableDir = Join-Path $portableRoot "NyaTerm-portable"
+          $dataDir = Join-Path $portableDir "data"
+          $assetPath = Join-Path (Get-Location) $assetName
+
+          Remove-Item -LiteralPath $portableRoot -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
+          Copy-Item -LiteralPath $exe -Destination (Join-Path $portableDir "NyaTerm.exe")
+          Copy-Item -LiteralPath $sidecar -Destination (Join-Path $portableDir "nyaterm-mcp.exe")
+          New-Item -ItemType File -Path (Join-Path $portableDir "portable.flag") -Force | Out-Null
+          New-Item -ItemType File -Path (Join-Path $dataDir ".keep") -Force | Out-Null
+
+          Compress-Archive -Path $portableDir -DestinationPath $assetPath -Force
+          Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PATH -ErrorAction SilentlyContinue
+          pnpm tauri signer sign --password "$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD" "$assetPath"
+
+          $signaturePath = "$assetPath.sig"
+          if (-not (Test-Path $signaturePath)) {
+            throw "Portable updater signature was not generated: $signaturePath"
+          }
+
+          gh release upload "$env:TAG" "$assetPath" "$signaturePath" --repo "$env:GITHUB_REPOSITORY" --clobber

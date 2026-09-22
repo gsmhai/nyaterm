@@ -778,6 +778,7 @@ function QuickCommands({ onSend, onSendToAll, sendDisabled = false }: QuickComma
   }, []);
 
   const headerCommandsCount = useMemo(() => {
+    if (viewMode !== "tile") return 0;
     if (headerContentWidth <= 0 || tileWidths.size === 0) return 0;
     let used = 0;
     let count = 0;
@@ -791,12 +792,29 @@ function QuickCommands({ onSend, onSendToAll, sendDisabled = false }: QuickComma
       count++;
     }
     return count;
-  }, [filteredCommands, headerContentWidth, tileWidths]);
+  }, [filteredCommands, headerContentWidth, tileWidths, viewMode]);
 
   const headerCommands = filteredCommands.slice(0, headerCommandsCount);
   const overflowCommands = filteredCommands.slice(headerCommandsCount);
 
-  const searchQuery = search.trim();
+  const headerTitleInfo = useMemo(() => {
+    const totalCount = commands.length;
+    const categoryCount = filteredCommands.length;
+    if (selectedCategory === "all") {
+      return {
+        label: t("quickCommands.allCategories"),
+        countText: `${totalCount}`,
+      };
+    }
+    const categoryLabel =
+      buildQuickCommandCategoryPath(allCategories, selectedCategory) ||
+      selectedCategory;
+    return {
+      label: categoryLabel,
+      countText: `${categoryCount}/${totalCount}`,
+    };
+  }, [selectedCategory, commands.length, filteredCommands.length, allCategories, t]);
+
   const categoryToDeleteCommandCount = useMemo(() => {
     if (!categoryToDelete) return 0;
     const deleteIds = collectQuickCommandCategoryDescendantIds(
@@ -1816,52 +1834,29 @@ function QuickCommands({ onSend, onSendToAll, sendDisabled = false }: QuickComma
             ref={headerContentRef}
             className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden"
           >
-            {headerCommands.map((cmd) => renderCommandTile(cmd))}
+            {viewMode === "tile" ? (
+              headerCommands.map((cmd) => renderCommandTile(cmd))
+            ) : (
+              <div className="flex min-w-0 items-baseline gap-2">
+                <span
+                  className="min-w-0 truncate text-[0.6875rem] font-semibold uppercase tracking-[0.16em]"
+                  style={{ color: "var(--df-text-muted)" }}
+                >
+                  {t("panel.quickCommands")} - {headerTitleInfo.label}
+                </span>
+                {commands.length > 0 && (
+                  <span
+                    className="shrink-0 text-[0.6875rem]"
+                    style={{ color: "var(--df-text-dimmed)" }}
+                  >
+                    {headerTitleInfo.countText}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="flex shrink-0 items-center gap-1">
-            <Popover
-              open={categoryPopoverOpen}
-              onOpenChange={setCategoryPopoverOpen}
-            >
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <PopoverTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      className="h-6 w-6 shrink-0 rounded-md p-0 transition-colors hover:bg-[var(--df-bg-hover)]"
-                      style={{
-                        color:
-                          selectedCategory !== "all"
-                            ? "var(--df-primary)"
-                            : "var(--df-text-muted)",
-                      }}
-                      aria-label={t("quickCommands.category")}
-                    >
-                      <MdFolder className="text-[1.05rem]" />
-                    </Button>
-                  </PopoverTrigger>
-                </TooltipTrigger>
-                <TooltipContent side="top">
-                  {t("quickCommands.category")}
-                </TooltipContent>
-              </Tooltip>
-              <PopoverContent
-                align="end"
-                className="w-[220px] p-2"
-                onDragOver={handleCategoryRootDragOver}
-                onDrop={handleCategoryRootDrop}
-              >
-                {renderCategoryTree()}
-              </PopoverContent>
-            </Popover>
-
-            <span
-              aria-hidden
-              className="mx-1 h-4 w-px shrink-0 bg-border/50"
-            />
-
             <div className="flex min-w-0 items-center gap-1">
               <div className="relative w-[9rem] shrink-0 transition-colors focus-within:text-[var(--df-primary)] text-[var(--df-text-dimmed)]">
                 <MdSearch className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-[0.875rem]" />
@@ -1981,6 +1976,43 @@ function QuickCommands({ onSend, onSendToAll, sendDisabled = false }: QuickComma
                 </DropdownMenuRadioGroup>
               </DropdownMenuContent>
             </DropdownMenu>
+
+            <Popover
+              open={categoryPopoverOpen}
+              onOpenChange={setCategoryPopoverOpen}
+            >
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      className="h-6 w-6 shrink-0 rounded-md p-0 transition-colors hover:bg-[var(--df-bg-hover)]"
+                      style={{
+                        color:
+                          selectedCategory !== "all"
+                            ? "var(--df-primary)"
+                            : "var(--df-text-muted)",
+                      }}
+                      aria-label={t("quickCommands.category")}
+                    >
+                      <MdFolder className="text-[1.05rem]" />
+                    </Button>
+                  </PopoverTrigger>
+                </TooltipTrigger>
+                <TooltipContent side="top">
+                  {t("quickCommands.category")}
+                </TooltipContent>
+              </Tooltip>
+              <PopoverContent
+                align="end"
+                className="min-w-[220px] w-fit max-w-[28rem] p-2"
+                onDragOver={handleCategoryRootDragOver}
+                onDrop={handleCategoryRootDrop}
+              >
+                {renderCategoryTree()}
+              </PopoverContent>
+            </Popover>
 
             <span
               aria-hidden

@@ -1,7 +1,12 @@
 name: Build Windows x64
 
 # Manual-only workflow: builds the Windows x64 installer (NSIS + MSI) and a
-# signed portable zip, then publishes them to a GitHub release.
+# portable zip, then publishes them to a GitHub release.
+#
+# This workflow degrades gracefully when the Tauri updater signing key is not
+# configured: it builds without updater artifacts so it can still produce the
+# installer and portable archive. If the signing key IS configured, it will
+# generate updater artifacts and sign the portable zip as usual.
 #
 # Trigger: GitHub → Actions → "Build Windows x64" → Run workflow.
 # Provide a tag (e.g. v1.2.3-win or windows-x64-2026-09-22); the same tag is
@@ -49,6 +54,25 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Check build options
+        id: build_options
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY_B64: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_B64 }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "${TAURI_SIGNING_PRIVATE_KEY_B64:-}" ]; then
+            echo "has_signing_key=true" >> "$GITHUB_OUTPUT"
+            echo "tauri_args=--bundles nsis,msi" >> "$GITHUB_OUTPUT"
+            echo "Tauri updater signing key is configured; updater artifacts will be generated."
+          else
+            echo "has_signing_key=false" >> "$GITHUB_OUTPUT"
+            echo "tauri_args=--bundles nsis,msi --config src-tauri/tauri.manual-win-x64.conf.json" >> "$GITHUB_OUTPUT"
+            echo "WARNING: TAURI_SIGNING_PRIVATE_KEY_B64 is not configured. Building without updater artifacts."
+            echo "         The installer and portable zip will still be produced, but not signed for the updater."
+          fi
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -79,16 +103,12 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Prepare Tauri updater signing key
+        if: ${{ steps.build_options.outputs.has_signing_key == 'true' }}
         shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY_B64: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_B64 }}
         run: |
           set -euo pipefail
-
-          if [ -z "${TAURI_SIGNING_PRIVATE_KEY_B64:-}" ]; then
-            echo "TAURI_SIGNING_PRIVATE_KEY_B64 is empty"
-            exit 1
-          fi
 
           node <<'NODE'
           const fs = require('fs');
@@ -119,8 +139,10 @@ jobs:
           set -euo pipefail
 
           if [ -z "${NYATERM_GITHUB_GIST_CLIENT_ID:-}" ]; then
-            echo "NYATERM_GITHUB_GIST_CLIENT_ID repository variable is required for release builds."
-            exit 1
+            echo "WARNING: NYATERM_GITHUB_GIST_CLIENT_ID repository variable is not configured."
+            echo "         The build will continue, but GitHub Gist cloud sync will be unavailable in this build."
+          else
+            echo "NYATERM_GITHUB_GIST_CLIENT_ID is configured."
           fi
 
       - name: Remove existing release/tag for overwrite
@@ -162,11 +184,11 @@ jobs:
             Includes:
             - NSIS installer (*-setup.exe)
             - MSI installer (*.msi)
-            - Signed portable zip (*_portable.zip)
+            - Portable zip (*_portable.zip)
           releaseDraft: false
           prerelease: ${{ github.event.inputs.prerelease == 'true' }}
           includeUpdaterJson: false
-          args: --bundles nsis,msi
+          args: ${{ steps.build_options.outputs.tauri_args }}
 
       - name: Package and sign Windows portable zip
         shell: pwsh
@@ -174,6 +196,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TAG: ${{ env.RELEASE_TAG }}
+          HAS_SIGNING_KEY: ${{ steps.build_options.outputs.has_signing_key }}
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -212,12 +235,20 @@ jobs:
           New-Item -ItemType File -Path (Join-Path $dataDir ".keep") -Force | Out-Null
 
           Compress-Archive -Path $portableDir -DestinationPath $assetPath -Force
-          Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PATH -ErrorAction SilentlyContinue
-          pnpm tauri signer sign --password "$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD" "$assetPath"
 
-          $signaturePath = "$assetPath.sig"
-          if (-not (Test-Path $signaturePath)) {
-            throw "Portable updater signature was not generated: $signaturePath"
+          $filesToUpload = @($assetPath)
+
+          if ($env:HAS_SIGNING_KEY -eq 'true') {
+            Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PATH -ErrorAction SilentlyContinue
+            pnpm tauri signer sign --password "$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD" "$assetPath"
+
+            $signaturePath = "$assetPath.sig"
+            if (-not (Test-Path $signaturePath)) {
+              throw "Portable updater signature was not generated: $signaturePath"
+            }
+            $filesToUpload += $signaturePath
+          } else {
+            Write-Host "No signing key configured; skipping portable zip signature."
           }
 
-          gh release upload "$env:TAG" "$assetPath" "$signaturePath" --repo "$env:GITHUB_REPOSITORY" --clobber
+          gh release upload "$env:TAG" $filesToUpload --repo "$env:GITHUB_REPOSITORY" --clobber

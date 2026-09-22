@@ -796,7 +796,6 @@ function QuickCommands({ onSend, onSendToAll, sendDisabled = false }: QuickComma
   const headerCommands = filteredCommands.slice(0, headerCommandsCount);
   const overflowCommands = filteredCommands.slice(headerCommandsCount);
 
-  const searchQuery = search.trim();
   const categoryToDeleteCommandCount = useMemo(() => {
     if (!categoryToDelete) return 0;
     const deleteIds = collectQuickCommandCategoryDescendantIds(

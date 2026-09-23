@@ -369,6 +369,14 @@ function QuickCommands({ onSend, onSendToAll, sendDisabled = false }: QuickComma
     setCommandToDelete(null);
   }, [commandToDelete, handleDelete]);
 
+  const handleDuplicateCommand = useCallback((cmd: QuickCommand) => {
+    const duplicate: QuickCommand = {
+      ...cmd,
+      id: crypto.randomUUID(),
+    };
+    setCommands((prev) => [...prev, duplicate]);
+  }, []);
+
   const handleConfirmDeleteCategory = useCallback(() => {
     if (!categoryToDelete) return;
 
@@ -1280,6 +1288,13 @@ function QuickCommands({ onSend, onSendToAll, sendDisabled = false }: QuickComma
           <MdEdit className="text-[0.875rem]" />
           {t("quickCommands.edit")}
         </ContextMenuItem>
+        <ContextMenuItem
+          className="text-xs gap-2"
+          onClick={() => handleDuplicateCommand(cmd)}
+        >
+          <MdContentCopy className="text-[0.875rem]" />
+          {t("quickCommands.duplicate")}
+        </ContextMenuItem>
         {onSendToAll && (
           <ContextMenuItem
             className="text-xs gap-2"
@@ -1299,7 +1314,7 @@ function QuickCommands({ onSend, onSendToAll, sendDisabled = false }: QuickComma
         </ContextMenuItem>
       </ContextMenuContent>
     ),
-    [handleSendToAll, onSendToAll, sendDisabled, t],
+    [handleSendToAll, handleDuplicateCommand, onSendToAll, sendDisabled, t],
   );
   const renderCommandListItem = useCallback(
     (cmd: QuickCommand) => {

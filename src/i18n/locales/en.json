@@ -1628,6 +1628,7 @@
     "copyFailed": "Copy failed, please retry",
     "createCategory": "Create \"{{name}}\"",
     "delete": "Delete",
+    "duplicate": "Duplicate",
     "deleteCategory": "Delete Category",
     "deleteCategoryConfirm": "Delete category '{{name}}' and its {{count}} commands?",
     "deleteConfirm": "Delete quick command '{{name}}'? This can't be undone.",

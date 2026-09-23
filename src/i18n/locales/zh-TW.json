@@ -1626,6 +1626,7 @@
     "copyFailed": "複製失敗，請重試",
     "createCategory": "建立 \"{{name}}\"",
     "delete": "刪除",
+    "duplicate": "複製",
     "deleteCategory": "刪除分類",
     "deleteCategoryConfirm": "確定要刪除分類「{{name}}」嗎？其中 {{count}} 個快捷命令也會被刪除。",
     "deleteConfirm": "確定要刪除快捷命令「{{name}}」嗎？此操作無法撤銷。",

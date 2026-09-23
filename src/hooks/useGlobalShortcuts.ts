@@ -30,6 +30,11 @@ const HOTKEY_OPTIONS = {
   ignoreEventWhen: isInsideRemoteDesktopInputRoot,
 } as const;
 
+const LOCAL_VIEW_HOTKEY_OPTIONS = {
+  enableOnFormTags: true,
+  preventDefault: true,
+} as const;
+
 export interface ShortcutCallbacks {
   onNewSession: () => void;
   onTemporarySshLink: () => void;
@@ -45,6 +50,8 @@ export interface ShortcutCallbacks {
   onSwitchTab: (index: number) => void;
   onToggleLeftSidebar: () => void;
   onToggleRightSidebar: () => void;
+  onTogglePaneFocus: () => void;
+  onToggleNativeFullscreen: () => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
   onResetZoom: () => void;
@@ -92,6 +99,12 @@ export function useGlobalShortcuts(
 
   useHotkeys(k("view.toggleLeftSidebar"), cb.onToggleLeftSidebar, HOTKEY_OPTIONS);
   useHotkeys(k("view.toggleRightSidebar"), cb.onToggleRightSidebar, HOTKEY_OPTIONS);
+  useHotkeys(k("view.togglePaneFocus"), cb.onTogglePaneFocus, LOCAL_VIEW_HOTKEY_OPTIONS);
+  useHotkeys(
+    k("view.toggleNativeFullscreen"),
+    cb.onToggleNativeFullscreen,
+    LOCAL_VIEW_HOTKEY_OPTIONS,
+  );
   useHotkeys(k("view.zoomIn"), cb.onZoomIn, HOTKEY_OPTIONS);
   useHotkeys(k("view.zoomOut"), cb.onZoomOut, HOTKEY_OPTIONS);
   useHotkeys(k("view.resetZoom"), cb.onResetZoom, HOTKEY_OPTIONS);

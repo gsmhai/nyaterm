@@ -480,6 +480,9 @@ export function RdpForm({
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="text-only">{t("dialog.rdpClipboardTextOnly")}</SelectItem>
+                      <SelectItem value="text-and-files">
+                        {t("dialog.rdpClipboardTextAndFiles")}
+                      </SelectItem>
                       <SelectItem value="disabled">{t("dialog.disabled")}</SelectItem>
                     </SelectContent>
                   </Select>

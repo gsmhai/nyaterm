@@ -18,7 +18,12 @@ import {
   removeSessionFromGroup,
   resumeSessionInGroup,
 } from "@/lib/syncInputGroups";
-import { findPaneBySessionId, findTabBySessionId, isSplitPane } from "@/lib/workspaceTabs";
+import {
+  findPaneById,
+  findPaneBySessionId,
+  findTabBySessionId,
+  isSplitPane,
+} from "@/lib/workspaceTabs";
 import type {
   PaneNode,
   RecordingMode,
@@ -33,6 +38,7 @@ import XTerminal from "./XTerminal";
 interface PaneWorkspaceProps {
   tab: Tab;
   visible: boolean;
+  paneFocusMode?: boolean;
   sessionInfoById?: Map<string, SessionInfo> | null;
   onActivatePane: (paneId: string) => void;
   onUpdateSplitRatio: (splitId: string, ratio: number) => void;
@@ -49,6 +55,7 @@ function SplitView({
   split,
   tab,
   visible,
+  paneFocusMode,
   sessionInfoById,
   onActivatePane,
   onUpdateSplitRatio,
@@ -63,6 +70,7 @@ function SplitView({
   split: SplitPane;
   tab: Tab;
   visible: boolean;
+  paneFocusMode: boolean;
   sessionInfoById?: Map<string, SessionInfo> | null;
   onActivatePane: (paneId: string) => void;
   onUpdateSplitRatio: (splitId: string, ratio: number) => void;
@@ -76,6 +84,8 @@ function SplitView({
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const isHorizontalSplit = split.direction === "horizontal";
+  const firstContainsActivePane = !!findPaneById(split.first, tab.activePaneId);
+  const secondContainsActivePane = !!findPaneById(split.second, tab.activePaneId);
 
   const handleResize = (delta: number) => {
     const size = isHorizontalSplit
@@ -95,7 +105,8 @@ function SplitView({
       <div
         className="min-h-0 min-w-0 relative"
         style={{
-          flexBasis: `${split.ratio * 100}%`,
+          display: paneFocusMode && !firstContainsActivePane ? "none" : undefined,
+          flexBasis: paneFocusMode ? "100%" : `${split.ratio * 100}%`,
           flexGrow: 0,
           flexShrink: 0,
         }}
@@ -103,7 +114,8 @@ function SplitView({
         <PaneNodeView
           node={split.first}
           tab={tab}
-          visible={visible}
+          visible={visible && (!paneFocusMode || firstContainsActivePane)}
+          paneFocusMode={paneFocusMode}
           sessionInfoById={sessionInfoById}
           showChrome
           onActivatePane={onActivatePane}
@@ -117,14 +129,17 @@ function SplitView({
           onSaveSessionTranscript={onSaveSessionTranscript}
         />
       </div>
-      <ResizeHandle
-        direction={isHorizontalSplit ? "vertical" : "horizontal"}
-        onResize={handleResize}
-      />
+      {!paneFocusMode && (
+        <ResizeHandle
+          direction={isHorizontalSplit ? "vertical" : "horizontal"}
+          onResize={handleResize}
+        />
+      )}
       <div
         className="min-h-0 min-w-0 flex-1 relative"
         style={{
-          flexBasis: `${(1 - split.ratio) * 100}%`,
+          display: paneFocusMode && !secondContainsActivePane ? "none" : undefined,
+          flexBasis: paneFocusMode ? "100%" : `${(1 - split.ratio) * 100}%`,
           flexGrow: 1,
           flexShrink: 1,
         }}
@@ -132,7 +147,8 @@ function SplitView({
         <PaneNodeView
           node={split.second}
           tab={tab}
-          visible={visible}
+          visible={visible && (!paneFocusMode || secondContainsActivePane)}
+          paneFocusMode={paneFocusMode}
           sessionInfoById={sessionInfoById}
           showChrome
           onActivatePane={onActivatePane}
@@ -154,6 +170,7 @@ function PaneNodeView({
   node,
   tab,
   visible,
+  paneFocusMode,
   sessionInfoById,
   showChrome,
   onActivatePane,
@@ -169,6 +186,7 @@ function PaneNodeView({
   node: PaneNode;
   tab: Tab;
   visible: boolean;
+  paneFocusMode: boolean;
   sessionInfoById?: Map<string, SessionInfo> | null;
   showChrome: boolean;
   onActivatePane: (paneId: string) => void;
@@ -234,6 +252,7 @@ function PaneNodeView({
         split={node}
         tab={tab}
         visible={visible}
+        paneFocusMode={paneFocusMode}
         sessionInfoById={sessionInfoById}
         onActivatePane={onActivatePane}
         onUpdateSplitRatio={onUpdateSplitRatio}
@@ -578,6 +597,7 @@ function PaneXTerminal({
 function PaneWorkspace({
   tab,
   visible,
+  paneFocusMode = false,
   sessionInfoById,
   onActivatePane,
   onUpdateSplitRatio,
@@ -598,8 +618,9 @@ function PaneWorkspace({
         node={tab.root}
         tab={tab}
         visible={visible}
+        paneFocusMode={paneFocusMode}
         sessionInfoById={sessionInfoById}
-        showChrome={isSplitPane(tab.root)}
+        showChrome={!paneFocusMode && isSplitPane(tab.root)}
         onActivatePane={onActivatePane}
         onUpdateSplitRatio={onUpdateSplitRatio}
         onReconnectPane={onReconnectPane}

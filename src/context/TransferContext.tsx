@@ -19,7 +19,7 @@ import { pruneRetainedTransfers as pruneTransferMap } from "@/lib/transferRetent
 
 export type TransferDirection = "upload" | "download" | "copy";
 export type TransferKind = "file" | "directory";
-export type TransferSource = "sftp" | "zmodem" | "serial_modem";
+export type TransferSource = "sftp" | "rdp" | "zmodem" | "serial_modem";
 export type TransferStatus =
   | "queued"
   | "transferring"
@@ -159,6 +159,7 @@ interface TransferEventPayload {
   item_count_total?: number;
   item_count_completed?: number;
   error_msg?: string;
+  source?: TransferSource;
 }
 
 function createTransferId() {
@@ -298,7 +299,7 @@ export function TransferProvider({ children }: { children: ReactNode }) {
             queueState:
               existing?.queueState ??
               (queuedTransfersRef.current.has(p.id) ? "running" : undefined),
-            source: existing?.source ?? "sftp",
+            source: p.source ?? existing?.source ?? "sftp",
           });
           return pruneRetainedTransfers(next, now);
         });
@@ -407,6 +408,12 @@ export function TransferProvider({ children }: { children: ReactNode }) {
       }
 
       if (p.status === "completed" && !p.parent_id) {
+        if (p.source === "rdp" && p.direction === "download") {
+          toast.success(t("fileTransfer.readyToPaste"), {
+            description: p.local_path,
+          });
+          return;
+        }
         if (p.direction === "download") {
           toast.success(
             kind === "directory"

@@ -288,6 +288,8 @@ function App() {
   // Mobile state
   const [mobileLeftOpen, setMobileLeftOpen] = useState(false);
   const [mobileRightOpen, setMobileRightOpen] = useState(false);
+  const [paneFocusMode, setPaneFocusMode] = useState(false);
+  const [nativeFullscreen, setNativeFullscreen] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
   const [showUpdateDialog, setShowUpdateDialog] = useState(false);
   const [showSyncGroupDialog, setShowSyncGroupDialog] = useState(false);
@@ -829,6 +831,57 @@ function App() {
   const activeConnection = activePane?.connectionId
     ? (savedConnections.find((connection) => connection.id === activePane.connectionId) ?? null)
     : null;
+
+  useEffect(() => {
+    if (paneFocusMode && !activePane) {
+      setPaneFocusMode(false);
+    }
+  }, [activePane, paneFocusMode]);
+
+  useEffect(() => {
+    if (!paneFocusMode) return;
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setPaneFocusMode(false);
+    };
+    window.addEventListener("keydown", handleEscape, true);
+    return () => window.removeEventListener("keydown", handleEscape, true);
+  }, [paneFocusMode]);
+
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      window.dispatchEvent(
+        new CustomEvent("nyaterm:refresh-terminals", {
+          detail: { nativeFullscreen, paneFocusMode },
+        }),
+      );
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [paneFocusMode, nativeFullscreen]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlistenResize: (() => void) | undefined;
+    let unlistenFocus: (() => void) | undefined;
+    void import("@tauri-apps/api/window").then(async ({ getCurrentWindow }) => {
+      if (disposed) return;
+      const currentWindow = getCurrentWindow();
+      const syncFullscreen = async () => {
+        const fullscreen = await currentWindow.isFullscreen().catch(() => false);
+        if (!disposed) setNativeFullscreen(fullscreen);
+      };
+      await syncFullscreen();
+      unlistenResize = await currentWindow.onResized(() => void syncFullscreen());
+      unlistenFocus = await currentWindow.onFocusChanged(() => void syncFullscreen());
+    });
+    return () => {
+      disposed = true;
+      unlistenResize?.();
+      unlistenFocus?.();
+    };
+  }, []);
   const [aiIntent, setAiIntent] = useState<AIOpenIntent | null>(null);
   const [terminalWindows, setTerminalWindows] = useState<TerminalWindowNode | null>(null);
   const previousActiveTabIdRef = useRef<string | null>(null);
@@ -3113,6 +3166,20 @@ function App() {
     void handleToggleSessionRecordingById(activePane.sessionId, "transcript");
   }, [activePane, handleToggleSessionRecordingById, isLocked]);
 
+  const handleTogglePaneFocus = useCallback(() => {
+    if (!activePane) return;
+    setPaneFocusMode((current) => !current);
+  }, [activePane]);
+
+  const handleToggleNativeFullscreen = useCallback(() => {
+    void import("@tauri-apps/api/window").then(async ({ getCurrentWindow }) => {
+      const currentWindow = getCurrentWindow();
+      const fullscreen = await currentWindow.isFullscreen();
+      await currentWindow.setFullscreen(!fullscreen);
+      setNativeFullscreen(!fullscreen);
+    });
+  }, []);
+
   useGlobalShortcuts(
     {
       onNewSession: () => handleNewSession(),
@@ -3129,6 +3196,8 @@ function App() {
       onSwitchTab: handleSwitchTab,
       onToggleLeftSidebar: handleToggleLeftSidebar,
       onToggleRightSidebar: handleToggleRightSidebar,
+      onTogglePaneFocus: handleTogglePaneFocus,
+      onToggleNativeFullscreen: handleToggleNativeFullscreen,
       onZoomIn: handleZoomIn,
       onZoomOut: handleZoomOut,
       onResetZoom: handleResetZoom,
@@ -3836,6 +3905,9 @@ function App() {
         t={t}
         uiConfig={uiConfig}
         appearance={appSettings.appearance}
+        paneFocusMode={paneFocusMode}
+        nativeFullscreen={nativeFullscreen}
+        onExitPaneFocus={() => setPaneFocusMode(false)}
         header={{
           onNewSession: () => handleNewSession(),
           onAbout: () => setShowAbout(true),
@@ -3923,6 +3995,7 @@ function App() {
           layout: terminalWindows,
           tabsById,
           focusedTabId: activeTabId,
+          paneFocusMode,
           unreadTabIds,
           disconnectedTabIds,
           sessionInfoById: liveSessionsById,

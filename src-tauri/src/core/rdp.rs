@@ -14,22 +14,15 @@ use ironrdp::client::config::{
     TransportKind as IronRdpTransportKind,
 };
 use ironrdp::client::rdp::{
-    RdpClient as IronRdpClient, RdpInputEvent as IronRdpInputEvent, RdpOutputEvent,
+    RdpClient as IronRdpClient, RdpInputEvent as IronRdpInputEvent,
+    RdpInputSender as IronRdpInputSender, RdpOutputEvent,
 };
-use ironrdp::cliprdr::backend::{
-    ClipboardMessage, ClipboardMessageProxy, CliprdrBackend, CliprdrBackendFactory,
-};
-use ironrdp::cliprdr::pdu::{
-    ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags, FileContentsRequest,
-    FileContentsResponse, FormatDataRequest, FormatDataResponse, LockDataId,
-    OwnedFormatDataResponse,
-};
-use ironrdp::core::impl_as_any;
 use ironrdp::input::{
     Database as IronRdpInputDatabase, MouseButton as IronRdpMouseButton,
     MousePosition as IronRdpMousePosition, Operation as IronRdpInputOperation,
     Scancode as IronRdpScancode, WheelRotations as IronRdpWheelRotations,
 };
+use ironrdp::pdu::geometry::Rectangle as _;
 use ironrdp::pdu::input::fast_path::{
     FastPathInputEvent as IronRdpFastPathInputEvent, KeyboardFlags as IronRdpKeyboardFlags,
 };
@@ -47,14 +40,12 @@ use tauri::async_runtime::JoinHandle as TauriJoinHandle;
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::sync::{Mutex, oneshot};
 use tokio::time::{Duration, sleep};
 use x509_cert::der::Decode as _;
 
 const MAX_FRAME_QUEUE: usize = 2;
 const MAX_CLIPBOARD_TEXT_BYTES: usize = 16 * 1024 * 1024;
-const CLIPBOARD_POLL_INTERVAL: Duration = Duration::from_millis(750);
-const CLIPBOARD_TIMEOUT: Duration = Duration::from_millis(1000);
 const CERTIFICATE_PROMPT_TIMEOUT: Duration = Duration::from_secs(120);
 const RDP_MIN_WIDTH: u32 = 640;
 const RDP_MIN_HEIGHT: u32 = 480;
@@ -206,13 +197,13 @@ pub struct RdpSession {
     generation: Mutex<u64>,
     frame_channel: Mutex<Option<Channel<InvokeResponseBody>>>,
     pending_frames: Mutex<VecDeque<Vec<u8>>>,
-    input_sender: Mutex<Option<mpsc::UnboundedSender<IronRdpInputEvent>>>,
+    input_sender: Mutex<Option<IronRdpInputSender>>,
     input_database: Mutex<IronRdpInputDatabase>,
     frame_sequence: Mutex<u64>,
     worker: Mutex<Option<RdpWorker>>,
     reconnect_attempts: Mutex<u32>,
     reconnect_task: Mutex<Option<TauriJoinHandle<()>>>,
-    clipboard_bridge: Mutex<Option<Arc<RdpClipboardBridge>>>,
+    clipboard_bridge: Mutex<Option<Arc<crate::core::rdp_clipboard::RdpClipboardBridge>>>,
     close_requested: AtomicBool,
     pending_certificates: Arc<Mutex<HashMap<String, RdpCertificatePending>>>,
 }
@@ -225,7 +216,7 @@ pub struct RdpSessionManager {
 
 struct RdpWorker {
     generation: u64,
-    input_sender: mpsc::UnboundedSender<IronRdpInputEvent>,
+    input_sender: IronRdpInputSender,
     join_handle: Option<JoinHandle<()>>,
 }
 
@@ -540,7 +531,7 @@ impl RdpEngine for IronRdpEngine {
 
         for event in input_events {
             sender
-                .send(event)
+                .try_send(event)
                 .map_err(|_| AppError::Channel("RDP input channel is closed".to_string()))?;
         }
         Ok(())
@@ -551,7 +542,7 @@ impl RdpEngine for IronRdpEngine {
             AppError::SessionNotFound("RDP session is not connected yet".to_string())
         })?;
         sender
-            .send(IronRdpInputEvent::Resize {
+            .try_send(IronRdpInputEvent::Resize {
                 width: u16::try_from(width).map_err(|_| {
                     AppError::Config("RDP width is outside the supported range".to_string())
                 })?,
@@ -581,10 +572,12 @@ impl RdpEngine for IronRdpEngine {
                 AppError::SessionNotFound("RDP clipboard bridge is not available".to_string())
             })?;
         let text_for_clipboard = text.clone();
-        tokio::task::spawn_blocking(move || write_clipboard_text_blocking(text_for_clipboard))
-            .await
-            .map_err(|error| AppError::Channel(format!("RDP clipboard task failed: {error}")))?
-            .map_err(AppError::Channel)?;
+        tokio::task::spawn_blocking(move || {
+            crate::core::rdp_clipboard::write_clipboard_text_blocking(text_for_clipboard)
+        })
+        .await
+        .map_err(|error| AppError::Channel(format!("RDP clipboard task failed: {error}")))?
+        .map_err(AppError::Channel)?;
         bridge.mark_text_written_from_remote(&text);
         bridge.notify_text_available().map_err(AppError::Channel)?;
         Ok(())
@@ -713,9 +706,18 @@ fn spawn_ironrdp_engine(app: AppHandle, session: Arc<RdpSession>, generation: u6
                 None,
             );
 
-            let (output_sender, mut output_receiver) = mpsc::channel(2);
-            let client = IronRdpClient::new(iron_config, output_sender);
+            let (output_sender, mut output_receiver) =
+                ironrdp::client::output_channel::output_channel(2);
+            let mut client = IronRdpClient::new(iron_config, output_sender).with_desktop_updates();
             let input_sender = client.input_sender();
+            if let Some(bridge) = session.clipboard_bridge.lock().await.clone() {
+                client = client.with_cliprdr_backend_factory(Box::new(
+                    crate::core::rdp_clipboard::RdpClipboardBackendFactory::from_input_sender(
+                        bridge,
+                        input_sender.clone(),
+                    ),
+                ));
+            }
             {
                 *session.input_sender.lock().await = Some(input_sender.clone());
                 *session.input_database.lock().await = IronRdpInputDatabase::new();
@@ -747,15 +749,8 @@ fn spawn_ironrdp_engine(app: AppHandle, session: Arc<RdpSession>, generation: u6
                 }
 
                 match event {
-                    RdpOutputEvent::ImagePatch {
-                        buffer,
-                        desktop_width,
-                        desktop_height,
-                        x,
-                        y,
-                        width,
-                        height,
-                    } => {
+                    RdpOutputEvent::DesktopUpdate(update) => {
+                        let (buffer, desktop_width, desktop_height, region) = update.into_parts();
                         let was_active =
                             matches!(*session.state.lock().await, RdpSessionState::Active);
                         if !was_active {
@@ -767,18 +762,41 @@ fn spawn_ironrdp_engine(app: AppHandle, session: Arc<RdpSession>, generation: u6
                         let sequence = next_frame_sequence(&session).await;
                         match build_frame_from_ironrdp_image(
                             &buffer,
-                            desktop_width,
-                            desktop_height,
-                            x,
-                            y,
-                            width,
-                            height,
+                            desktop_width.get(),
+                            desktop_height.get(),
+                            region.left,
+                            region.top,
+                            region.width(),
+                            region.height(),
                             sequence,
                         ) {
                             Ok(frame) => queue_or_send_frame(&session, frame).await,
                             Err(error) => tracing::warn!(
                                 session_id = %session_id,
                                 "Discarded invalid RDP frame patch: {error}"
+                            ),
+                        }
+                    }
+                    RdpOutputEvent::Image {
+                        buffer,
+                        width,
+                        height,
+                    } => {
+                        let sequence = next_frame_sequence(&session).await;
+                        match build_frame_from_ironrdp_image(
+                            &buffer,
+                            width.get(),
+                            height.get(),
+                            0,
+                            0,
+                            width.get(),
+                            height.get(),
+                            sequence,
+                        ) {
+                            Ok(frame) => queue_or_send_frame(&session, frame).await,
+                            Err(error) => tracing::warn!(
+                                session_id = %session_id,
+                                "Discarded invalid full RDP frame: {error}"
                             ),
                         }
                     }
@@ -886,6 +904,7 @@ fn spawn_ironrdp_engine(app: AppHandle, session: Arc<RdpSession>, generation: u6
                                 .encode(&pointer.bitmap_data),
                         },
                     ),
+                    _ => {}
                 }
             }
 
@@ -990,22 +1009,23 @@ async fn build_ironrdp_config(
                 Ok(IronRdpDirectTransport {
                     stream: Box::new(IronRdpTransportStreamAdapter(transport.stream)),
                     local_addr: transport.local_addr,
+                    peer_addr: None,
                 })
             })
         }));
     }
 
+    stop_clipboard_bridge(session).await;
     if config.clipboard_mode == "disabled" {
-        *session.clipboard_bridge.lock().await = None;
         builder = builder.with_clipboard(IronRdpClipboardType::Disable);
     } else {
-        let bridge = Arc::new(RdpClipboardBridge::new(config.session_id.clone()));
+        let bridge = Arc::new(crate::core::rdp_clipboard::RdpClipboardBridge::new(
+            app.clone(),
+            config.session_id.clone(),
+            config.clipboard_mode == "text-and-files",
+        ));
         *session.clipboard_bridge.lock().await = Some(bridge.clone());
-        builder = builder
-            .with_clipboard(IronRdpClipboardType::Enable)
-            .with_cliprdr_factory(move |proxy| {
-                Box::new(RdpClipboardBackendFactory::new(bridge.clone(), proxy))
-            });
+        builder = builder.with_clipboard(IronRdpClipboardType::Enable);
     }
 
     builder
@@ -1180,274 +1200,6 @@ fn certificate_policy_allows_without_prompt(
     }
 }
 
-struct RdpClipboardBridge {
-    session_id: String,
-    shutdown: AtomicBool,
-    watcher_started: AtomicBool,
-    proxy: std::sync::Mutex<Option<Arc<std::sync::Mutex<Box<dyn ClipboardMessageProxy>>>>>,
-    last_text_hash: std::sync::Mutex<Option<u64>>,
-}
-
-impl fmt::Debug for RdpClipboardBridge {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RdpClipboardBridge")
-            .field("session_id", &self.session_id)
-            .field("shutdown", &self.shutdown.load(Ordering::SeqCst))
-            .field(
-                "watcher_started",
-                &self.watcher_started.load(Ordering::SeqCst),
-            )
-            .finish_non_exhaustive()
-    }
-}
-
-impl RdpClipboardBridge {
-    fn new(session_id: String) -> Self {
-        Self {
-            session_id,
-            shutdown: AtomicBool::new(false),
-            watcher_started: AtomicBool::new(false),
-            proxy: std::sync::Mutex::new(None),
-            last_text_hash: std::sync::Mutex::new(None),
-        }
-    }
-
-    fn set_proxy(&self, proxy: Arc<std::sync::Mutex<Box<dyn ClipboardMessageProxy>>>) {
-        if let Ok(mut current) = self.proxy.lock() {
-            *current = Some(proxy);
-        }
-    }
-
-    fn notify_text_available(&self) -> Result<(), String> {
-        let proxy = self
-            .proxy
-            .lock()
-            .map_err(|_| "RDP clipboard proxy lock is poisoned".to_string())?
-            .clone()
-            .ok_or_else(|| "RDP clipboard channel is not ready".to_string())?;
-        let proxy = proxy
-            .lock()
-            .map_err(|_| "RDP clipboard proxy lock is poisoned".to_string())?;
-        proxy.send_clipboard_message(ClipboardMessage::SendInitiateCopy(vec![
-            ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT),
-        ]));
-        Ok(())
-    }
-
-    fn start_watcher(
-        self: &Arc<Self>,
-        proxy: Arc<std::sync::Mutex<Box<dyn ClipboardMessageProxy>>>,
-    ) {
-        if self.watcher_started.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        let bridge = self.clone();
-        std::thread::spawn(move || {
-            while !bridge.shutdown.load(Ordering::SeqCst) {
-                if let Some(text) = read_clipboard_text_blocking() {
-                    if clipboard_text_within_limit(&text) {
-                        let hash = stable_text_hash(&text);
-                        let changed = if let Ok(mut last) = bridge.last_text_hash.lock() {
-                            if *last == Some(hash) {
-                                false
-                            } else {
-                                *last = Some(hash);
-                                true
-                            }
-                        } else {
-                            false
-                        };
-                        if changed && let Ok(proxy) = proxy.lock() {
-                            proxy.send_clipboard_message(ClipboardMessage::SendInitiateCopy(vec![
-                                ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT),
-                            ]));
-                        }
-                    }
-                }
-                std::thread::sleep(CLIPBOARD_POLL_INTERVAL);
-            }
-        });
-    }
-
-    fn stop(&self) {
-        self.shutdown.store(true, Ordering::SeqCst);
-    }
-
-    fn mark_text_written_from_remote(&self, text: &str) {
-        if let Ok(mut last) = self.last_text_hash.lock() {
-            *last = Some(stable_text_hash(text));
-        }
-    }
-}
-
-struct RdpClipboardBackendFactory {
-    bridge: Arc<RdpClipboardBridge>,
-    proxy: Arc<std::sync::Mutex<Box<dyn ClipboardMessageProxy>>>,
-}
-
-impl RdpClipboardBackendFactory {
-    fn new(bridge: Arc<RdpClipboardBridge>, proxy: Box<dyn ClipboardMessageProxy>) -> Self {
-        let proxy = Arc::new(std::sync::Mutex::new(proxy));
-        bridge.set_proxy(proxy.clone());
-        Self { bridge, proxy }
-    }
-}
-
-impl CliprdrBackendFactory for RdpClipboardBackendFactory {
-    fn build_cliprdr_backend(&self) -> Box<dyn CliprdrBackend> {
-        Box::new(RdpClipboardBackend {
-            bridge: self.bridge.clone(),
-            proxy: self.proxy.clone(),
-            negotiated_capabilities: ClipboardGeneralCapabilityFlags::empty(),
-        })
-    }
-}
-
-#[derive(Debug)]
-struct RdpClipboardBackend {
-    bridge: Arc<RdpClipboardBridge>,
-    proxy: Arc<std::sync::Mutex<Box<dyn ClipboardMessageProxy>>>,
-    negotiated_capabilities: ClipboardGeneralCapabilityFlags,
-}
-
-impl_as_any!(RdpClipboardBackend);
-
-impl RdpClipboardBackend {
-    fn send(&self, message: ClipboardMessage) {
-        if let Ok(proxy) = self.proxy.lock() {
-            proxy.send_clipboard_message(message);
-        }
-    }
-
-    fn advertise_text_if_available(&self) {
-        if read_clipboard_text_blocking()
-            .filter(|text| !text.is_empty() && clipboard_text_within_limit(text))
-            .is_some()
-        {
-            self.send(ClipboardMessage::SendInitiateCopy(vec![
-                ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT),
-            ]));
-        }
-    }
-}
-
-impl CliprdrBackend for RdpClipboardBackend {
-    fn temporary_directory(&self) -> &str {
-        ".nyaterm-rdp-cliprdr"
-    }
-
-    fn client_capabilities(&self) -> ClipboardGeneralCapabilityFlags {
-        ClipboardGeneralCapabilityFlags::USE_LONG_FORMAT_NAMES
-    }
-
-    fn on_ready(&mut self) {
-        self.bridge.start_watcher(self.proxy.clone());
-        self.advertise_text_if_available();
-    }
-
-    fn on_request_format_list(&mut self) {
-        self.advertise_text_if_available();
-    }
-
-    fn on_process_negotiated_capabilities(
-        &mut self,
-        capabilities: ClipboardGeneralCapabilityFlags,
-    ) {
-        self.negotiated_capabilities = capabilities;
-    }
-
-    fn on_remote_copy(&mut self, available_formats: &[ClipboardFormat]) {
-        if available_formats
-            .iter()
-            .any(|format| format.id == ClipboardFormatId::CF_UNICODETEXT)
-        {
-            self.send(ClipboardMessage::SendInitiatePaste(
-                ClipboardFormatId::CF_UNICODETEXT,
-            ));
-        }
-    }
-
-    fn on_format_data_request(&mut self, request: FormatDataRequest) {
-        if request.format != ClipboardFormatId::CF_UNICODETEXT {
-            self.send(ClipboardMessage::SendFormatData(
-                OwnedFormatDataResponse::new_error(),
-            ));
-            return;
-        }
-        let response = match read_clipboard_text_blocking() {
-            Some(text) if clipboard_text_within_limit(&text) => {
-                OwnedFormatDataResponse::new_unicode_string(&text)
-            }
-            _ => OwnedFormatDataResponse::new_error(),
-        };
-        self.send(ClipboardMessage::SendFormatData(response));
-    }
-
-    fn on_format_data_response(&mut self, response: FormatDataResponse<'_>) {
-        if response.is_error() {
-            return;
-        }
-        let Ok(text) = response.to_unicode_string() else {
-            return;
-        };
-        if !clipboard_text_within_limit(&text) {
-            tracing::warn!(
-                session_id = %self.bridge.session_id,
-                "Ignoring oversized RDP clipboard text from remote"
-            );
-            return;
-        }
-        self.bridge.mark_text_written_from_remote(&text);
-        std::thread::spawn(move || {
-            let _ = write_clipboard_text_blocking(text);
-        });
-    }
-
-    fn on_file_contents_request(&mut self, request: FileContentsRequest) {
-        self.send(ClipboardMessage::SendFileContentsResponse(
-            FileContentsResponse::new_error(request.stream_id),
-        ));
-    }
-
-    fn on_file_contents_response(&mut self, _response: FileContentsResponse<'_>) {}
-
-    fn on_lock(&mut self, _data_id: LockDataId) {}
-
-    fn on_unlock(&mut self, _data_id: LockDataId) {}
-}
-
-fn read_clipboard_text_blocking() -> Option<String> {
-    let start = std::time::Instant::now();
-    let mut clipboard = arboard::Clipboard::new().ok()?;
-    if start.elapsed() > CLIPBOARD_TIMEOUT {
-        return None;
-    }
-    clipboard.get_text().ok()
-}
-
-fn write_clipboard_text_blocking(text: String) -> Result<(), String> {
-    let start = std::time::Instant::now();
-    let mut clipboard =
-        arboard::Clipboard::new().map_err(|error| format!("failed to open clipboard: {error}"))?;
-    if start.elapsed() > CLIPBOARD_TIMEOUT {
-        return Err("clipboard write timed out".to_string());
-    }
-    clipboard
-        .set_text(text)
-        .map_err(|error| format!("failed to write clipboard text: {error}"))
-}
-
-fn clipboard_text_within_limit(text: &str) -> bool {
-    text.len() <= MAX_CLIPBOARD_TEXT_BYTES
-}
-
-fn stable_text_hash(text: &str) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    text.hash(&mut hasher);
-    hasher.finish()
-}
-
 enum RdpInputAction {
     Operations(Vec<IronRdpInputOperation>),
     FastPath(IronRdpFastPathInputEvent),
@@ -1599,7 +1351,7 @@ fn clamp_f64_to_i16(value: f64) -> i16 {
 
 async fn close_current_input_sender(session: &RdpSession) {
     if let Some(sender) = session.input_sender.lock().await.take() {
-        let _ = sender.send(IronRdpInputEvent::Close);
+        sender.request_close();
     }
 }
 
@@ -1612,7 +1364,7 @@ async fn shutdown_worker(session: &RdpSession) {
             generation = worker.generation,
             "Shutting down RDP worker"
         );
-        let _ = worker.input_sender.send(IronRdpInputEvent::Close);
+        worker.input_sender.request_close();
         if let Some(handle) = worker.join_handle.take() {
             if handle.is_finished() {
                 let _ = handle.join();
@@ -2140,11 +1892,15 @@ mod tests {
 
     #[test]
     fn native_tls_vendor_keeps_certificate_decision_with_nyaterm() {
-        let native_tls_backend = include_str!("../../vendor/ironrdp-tls/src/native_tls.rs");
+        let native_tls_backend =
+            include_str!("../../vendor/ironrdp/crates/ironrdp-tls/src/native_tls.rs");
+        let client_connection =
+            include_str!("../../vendor/ironrdp/crates/ironrdp-client/src/rdp.rs");
 
         assert!(native_tls_backend.contains(".danger_accept_invalid_certs(true)"));
         assert!(native_tls_backend.contains(".danger_accept_invalid_hostnames(true)"));
-        assert!(native_tls_backend.contains(".use_sni(false)"));
+        assert!(client_connection.contains("verify_server_certificate"));
+        assert!(client_connection.contains("server_certificate_verifier"));
     }
 
     #[test]
@@ -2179,24 +1935,6 @@ mod tests {
             classify_session_error(&"native-tls Schannel handshake failure"),
             (RdpErrorKind::Tls, true)
         );
-    }
-
-    #[test]
-    fn clipboard_limit_rejects_oversized_text() {
-        let oversized = "x".repeat(MAX_CLIPBOARD_TEXT_BYTES + 1);
-        assert!(clipboard_text_within_limit(""));
-        assert!(clipboard_text_within_limit("hello"));
-        assert!(!clipboard_text_within_limit(&oversized));
-    }
-
-    #[test]
-    fn clipboard_hash_supports_loop_prevention_tokens() {
-        let bridge = RdpClipboardBridge::new("s".to_string());
-        bridge.mark_text_written_from_remote("same");
-
-        let current = bridge.last_text_hash.lock().unwrap();
-        assert_eq!(*current, Some(stable_text_hash("same")));
-        assert_ne!(*current, Some(stable_text_hash("different")));
     }
 
     #[test]

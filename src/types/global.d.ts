@@ -608,7 +608,7 @@ export interface SavedConnection {
 
 export type RdpCertificatePolicy = "strict" | "prompt" | "accept-temporarily";
 export type RdpDisplayMode = "fit-window" | "fixed" | "native";
-export type RdpClipboardMode = "disabled" | "text-only";
+export type RdpClipboardMode = "disabled" | "text-only" | "text-and-files";
 
 export interface RdpSecuritySettings {
   use_nla: boolean;

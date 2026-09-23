@@ -1028,6 +1028,7 @@ impl RemoteFs for ScpEnhancedBackend {
                             local_path: safe_local_path,
                             direction: "download".to_string(),
                             kind: "file".to_string(),
+                            source: None,
                             status: "completed".to_string(),
                             size: 0,
                             bytes_transferred: 0,

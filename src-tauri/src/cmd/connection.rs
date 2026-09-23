@@ -553,7 +553,10 @@ fn validate_rdp_config(connection: &SavedConnection) -> AppResult<()> {
     if !matches!(display.color_depth, 16 | 24 | 32) {
         return Err(AppError::Config("RDP color depth is invalid".to_string()));
     }
-    if !matches!(clipboard.mode.as_str(), "disabled" | "text-only") {
+    if !matches!(
+        clipboard.mode.as_str(),
+        "disabled" | "text-only" | "text-and-files"
+    ) {
         return Err(AppError::Config(
             "RDP clipboard mode is invalid".to_string(),
         ));
@@ -809,13 +812,14 @@ mod tests {
         resolve_account_password_update, resolve_private_key_for_save, resolve_text_secret_input,
         update_connection_asset_from_monitoring_in_config, update_connection_icon_in_config,
         validate_certificate_content, validate_local_terminal_config, validate_private_key_content,
-        validate_proxy_jump_config, validate_sftp_settings_config,
+        validate_proxy_jump_config, validate_rdp_config, validate_sftp_settings_config,
         validate_ssh_agent_forwarding_identity_inputs, validate_vnc_config,
     };
     use crate::config::{
         AiExecutionProfile, AssetAccelerator, AssetAcceleratorType, AssetDisk, AssetDiskPurpose,
-        AssetMetadata, ConnectionAuth, ConnectionNetwork, ConnectionType, Group, SavedConnection,
-        SavedPassword, SessionsConfig, SftpSettings, SshKey, VncClipboardSettings,
+        AssetMetadata, ConnectionAuth, ConnectionNetwork, ConnectionType, Group,
+        RdpClipboardSettings, RdpDisplaySettings, RdpReconnectSettings, RdpSecuritySettings,
+        SavedConnection, SavedPassword, SessionsConfig, SftpSettings, SshKey, VncClipboardSettings,
         VncDisplaySettings, VncReconnectSettings, VncSecuritySettings,
     };
     use base64::Engine;
@@ -954,6 +958,52 @@ e+JpiSq66Z6GIt0801skPh20jxOO3F52SoX1IeO5D5PXfZrfSZlw6S8c7bwyp2FHxDewRx
             panic!("expected VNC connection");
         }
         assert!(validate_vnc_config(&connection).is_err());
+    }
+
+    #[test]
+    fn validates_rdp_file_clipboard_mode() {
+        let mut connection = SavedConnection {
+            id: "rdp-1".to_string(),
+            name: "RDP".to_string(),
+            config: ConnectionType::Rdp {
+                host: "example.com".to_string(),
+                port: 3389,
+                username: "administrator".to_string(),
+                domain: String::new(),
+                security: RdpSecuritySettings::default(),
+                display: RdpDisplaySettings::default(),
+                clipboard: RdpClipboardSettings {
+                    mode: "text-and-files".to_string(),
+                },
+                reconnect: RdpReconnectSettings::default(),
+            },
+            group_id: None,
+            description: None,
+            tags: Vec::new(),
+            sort_order: 0,
+            icon: None,
+            icon_auto_detect: None,
+            auth: None,
+            network: None,
+            post_login: None,
+            recording: None,
+            ssh_algorithms: None,
+            ssh_profile: Default::default(),
+            terminal_type: None,
+            sftp: SftpSettings::default(),
+            asset: None,
+            created_at_ms: None,
+            updated_at_ms: None,
+            last_used_at_ms: None,
+        };
+
+        assert!(validate_rdp_config(&connection).is_ok());
+        if let ConnectionType::Rdp { clipboard, .. } = &mut connection.config {
+            clipboard.mode = "files-only".to_string();
+        } else {
+            panic!("expected RDP connection");
+        }
+        assert!(validate_rdp_config(&connection).is_err());
     }
 
     fn ssh_connection(id: &str, proxy_jump_id: Option<&str>) -> SavedConnection {

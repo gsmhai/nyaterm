@@ -15,13 +15,15 @@ interface TransferEventPayload {
   bytes_transferred: number;
   total_size: number;
   error_msg?: string;
+  source?: "sftp" | "rdp" | "zmodem" | "serial_modem";
 }
 
 const mocks = vi.hoisted(() => ({
-  listener: undefined as
-    | ((event: { payload: TransferEventPayload }) => void)
-    | undefined,
+  listener: undefined as ((event: { payload: TransferEventPayload }) => void) | undefined,
   invoke: vi.fn().mockResolvedValue(undefined),
+  translate: vi.fn((key: string, options?: { name?: string }) =>
+    options?.name ? `${key}:${options.name}` : key,
+  ),
   toastDismiss: vi.fn(),
   toastError: vi.fn(),
   toastMessage: vi.fn(),
@@ -31,10 +33,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(
-    async (
-      _event: string,
-      listener: (event: { payload: TransferEventPayload }) => void,
-    ) => {
+    async (_event: string, listener: (event: { payload: TransferEventPayload }) => void) => {
       mocks.listener = listener;
       return () => {
         mocks.listener = undefined;
@@ -59,8 +58,7 @@ vi.mock("@/context/AppContext", () => ({
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
-    t: (key: string, options?: { name?: string }) =>
-      options?.name ? `${key}:${options.name}` : key,
+    t: mocks.translate,
   }),
 }));
 
@@ -121,29 +119,21 @@ describe("TransferProvider transfer completion toasts", () => {
   it("warns when a directory upload completes with skipped files", async () => {
     await emitTransferEvent({
       ...baseEvent,
-      error_msg:
-        "Skipped 1 failed file(s); first failure: /remote/folder/locked.txt",
+      error_msg: "Skipped 1 failed file(s); first failure: /remote/folder/locked.txt",
     });
 
-    expect(mocks.toastWarning).toHaveBeenCalledWith(
-      "fileTransfer.uploadFolderCompleted",
-      {
-        description:
-          "Skipped 1 failed file(s); first failure: /remote/folder/locked.txt",
-      },
-    );
+    expect(mocks.toastWarning).toHaveBeenCalledWith("fileTransfer.uploadFolderCompleted", {
+      description: "Skipped 1 failed file(s); first failure: /remote/folder/locked.txt",
+    });
     expect(mocks.toastSuccess).not.toHaveBeenCalled();
   });
 
   it("keeps the success toast for a fully successful directory upload", async () => {
     await emitTransferEvent(baseEvent);
 
-    expect(mocks.toastSuccess).toHaveBeenCalledWith(
-      "fileTransfer.uploadFolderCompleted",
-      {
-        description: "/remote/folder",
-      },
-    );
+    expect(mocks.toastSuccess).toHaveBeenCalledWith("fileTransfer.uploadFolderCompleted", {
+      description: "/remote/folder",
+    });
     expect(mocks.toastWarning).not.toHaveBeenCalled();
   });
 
@@ -154,12 +144,9 @@ describe("TransferProvider transfer completion toasts", () => {
       status: "error",
     });
 
-    expect(mocks.toastError).toHaveBeenCalledWith(
-      "fileTransfer.uploadFolderFailed:folder",
-      {
-        description: "permission denied",
-      },
-    );
+    expect(mocks.toastError).toHaveBeenCalledWith("fileTransfer.uploadFolderFailed:folder", {
+      description: "permission denied",
+    });
     expect(mocks.toastWarning).not.toHaveBeenCalled();
     expect(mocks.toastSuccess).not.toHaveBeenCalled();
   });
@@ -189,6 +176,29 @@ describe("TransferProvider transfer completion toasts", () => {
           }),
         ]),
       );
+    });
+  });
+
+  it("maps RDP backend events and reports files ready to paste", async () => {
+    const event = {
+      ...baseEvent,
+      direction: "download",
+      local_path: "C:/cache/rdp-files",
+      source: "rdp",
+    } satisfies TransferEventPayload;
+
+    await emitTransferEvent({ ...event, status: "started" });
+    await emitTransferEvent(event);
+
+    await waitFor(() => {
+      expect(transferContext?.transfers).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: "transfer-1", source: "rdp", status: "completed" }),
+        ]),
+      );
+    });
+    expect(mocks.toastSuccess).toHaveBeenCalledWith("fileTransfer.readyToPaste", {
+      description: "C:/cache/rdp-files",
     });
   });
 });

@@ -19,6 +19,7 @@ mod output;
 pub mod portable_snapshot;
 mod quick_commands;
 pub mod rdp;
+pub(crate) mod rdp_clipboard;
 pub(crate) mod rdp_keyboard_capture;
 mod recording;
 pub mod remote_desktop;

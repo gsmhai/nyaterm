@@ -1623,6 +1623,7 @@
     "command": "Command",
     "commandPlaceholder": "e.g. ls -la\nUse {{varName}} for variables.",
     "commandScript": "Script",
+    "scriptSyntaxHint": "Special directives in [ ]: [DELAY 500] waits 500ms; [CTRL+1], [F1], [ENTER] send keystrokes. Escape a literal [ with \\[. The Enter ending a directive line is not sent to the terminal.",
     "compactListMode": "Compact list",
     "copyCommand": "Copy command",
     "copyFailed": "Copy failed, please retry",

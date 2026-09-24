@@ -1621,6 +1621,7 @@
     "command": "命令",
     "commandPlaceholder": "例如：ls -la\n使用 {{varName}} 注入動態引數。",
     "commandScript": "命令指令碼",
+    "scriptSyntaxHint": "支援特殊指令（用 [ ] 包裹）：[DELAY 500] 延時 500 毫秒；[CTRL+1]、[F1]、[ENTER] 傳送按鍵。要輸入真正的 [ 時用 \\[ 轉義。特殊指令行尾的 Enter 不會傳送到終端機。",
     "compactListMode": "緊湊清單",
     "copyCommand": "複製命令",
     "copyFailed": "複製失敗，請重試",

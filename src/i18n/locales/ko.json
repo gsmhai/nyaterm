@@ -1621,6 +1621,7 @@
     "command": "명령",
     "commandPlaceholder": "예: ls -la\n변수에는 {{varName}}을 사용하세요.",
     "commandScript": "스크립트",
+    "scriptSyntaxHint": "특수 지시문은 [ ] 안에 입력합니다: [DELAY 500]은 500ms 대기, [CTRL+1]·[F1]·[ENTER] 등은 키를 전송합니다. 실제 [ 문자는 \\[ 로 이스케이프합니다. 지시문 줄 끝의 Enter는 터미널로 전송되지 않습니다.",
     "compactListMode": "간략한 목록",
     "copyCommand": "명령 복사",
     "copyFailed": "복사에 실패했습니다. 다시 시도하세요",

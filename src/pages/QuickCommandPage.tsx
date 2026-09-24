@@ -740,6 +740,9 @@ export default function QuickCommandPage() {
               setErrors((p) => ({ ...p, command: undefined }));
             }}
           />
+          <p className="text-[0.6875rem] leading-relaxed text-muted-foreground">
+            {t("quickCommands.scriptSyntaxHint")}
+          </p>
         </div>
 
         {errors.general && (

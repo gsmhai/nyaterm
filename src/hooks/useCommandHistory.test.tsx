@@ -8,12 +8,26 @@ import {
 } from "@/lib/terminalInputTracker";
 import { useCommandHistory } from "./useCommandHistory";
 
-const mocks = vi.hoisted(() => ({ invoke: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  invoke: vi.fn(),
+  listeners: new Map<string, () => void>(),
+}));
 vi.mock("@/lib/invoke", () => ({ invoke: mocks.invoke }));
-vi.mock("@/lib/backend/api", () => ({ listen: async () => () => {} }));
+vi.mock("@/lib/backend/api", () => ({
+  listen: async (event: string, handler: () => void) => {
+    mocks.listeners.set(event, handler);
+    return () => {
+      mocks.listeners.delete(event);
+    };
+  },
+}));
+
+const alwaysAllowed = () => true;
+const neverAllowed = () => false;
 
 beforeEach(() => {
   mocks.invoke.mockReset();
+  mocks.listeners.clear();
   mocks.invoke.mockImplementation(async (command: string) =>
     command === "fuzzy_search_commands"
       ? [
@@ -96,3 +110,57 @@ it.each([
     await waitFor(() => expect(result.current.showSuggestions).toBe(true));
   },
 );
+
+it("refreshes on global history events while the pane may show suggestions", async () => {
+  const inputStateRef = {
+    current: { ...createTerminalInputState(), value: "g", cursor: 1 },
+  };
+  renderHook(() =>
+    useCommandHistory({ current: null }, inputStateRef, vi.fn(), alwaysAllowed, true, 1, 100),
+  );
+
+  await waitFor(() => expect(mocks.listeners.has("command-history-changed")).toBe(true));
+  // Wait out the mount-time search, then assert the event itself triggers one.
+  await waitFor(() => expect(mocks.invoke).toHaveBeenCalled());
+  mocks.invoke.mockClear();
+
+  act(() => mocks.listeners.get("command-history-changed")?.());
+
+  await waitFor(() =>
+    expect(mocks.invoke).toHaveBeenCalledWith(
+      "fuzzy_search_history",
+      expect.objectContaining({ pattern: "g" }),
+    ),
+  );
+});
+
+it("ignores global history events for an unfocused split pane", async () => {
+  const inputStateRef = {
+    current: { ...createTerminalInputState(), value: "g", cursor: 1 },
+  };
+  const { result } = renderHook(() =>
+    // XTerminal returns false from canShowCommandSuggestions when the pane is
+    // not active, so global events must not revive its stale input buffer.
+    useCommandHistory(
+      { current: null },
+      inputStateRef,
+      vi.fn(),
+      neverAllowed,
+      true,
+      1,
+      100,
+    ),
+  );
+
+  await waitFor(() => expect(mocks.listeners.has("command-history-changed")).toBe(true));
+
+  act(() => {
+    mocks.listeners.get("command-history-changed")?.();
+    mocks.listeners.get("quick-commands-changed")?.();
+  });
+
+  // Longer than the 80ms debounce of any wrongly scheduled search.
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  expect(mocks.invoke).not.toHaveBeenCalled();
+  expect(result.current.showSuggestions).toBe(false);
+});

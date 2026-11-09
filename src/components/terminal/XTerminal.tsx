@@ -695,6 +695,13 @@ export default function XTerminal({
   const { shellIntegrationRef } = useShellIntegration();
   const canShowCommandSuggestions = useCallback(
     (options?: { allowEmpty?: boolean }) => {
+      // The suggestion popup belongs to the focused pane only. Background
+      // split panes still receive global command-history-changed and
+      // quick-commands-changed events, so without this guard a pane with a
+      // stale input buffer can (re)open its popup while another pane is used.
+      if (!activeRef.current || !visibleRef.current) {
+        return false;
+      }
       if (credentialPromptInputUntilRef.current > Date.now()) {
         return false;
       }
@@ -783,6 +790,14 @@ export default function XTerminal({
     commandSuggestionMinChars,
     commandSuggestionMaxChars,
   );
+
+  // A popup that is already open must not outlive the pane that owns it.
+  // dismissSuggestions also clears the pending 80ms debounced search, so a
+  // pane losing focus can no longer pop up suggestions a moment later.
+  useEffect(() => {
+    if (active && visible) return;
+    dismissSuggestions();
+  }, [active, visible, dismissSuggestions]);
 
   const canDetectCredentialPrompt = useCallback(() => {
     const terminal = terminalRef.current;

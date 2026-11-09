@@ -105,6 +105,11 @@ import {
   sendSessionInput,
   sendSessionInputWithSync,
 } from "./lib/sessionInput";
+import {
+  hasQuickCommandDirectives,
+  parseQuickCommandScript,
+  runQuickCommandScript,
+} from "./lib/quickCommandScript";
 import { buildSmartSplitLayout, type SmartSplitMode } from "./lib/smartSplit";
 import { getSessionInputPeerIds, purgeSessionFromGroups } from "./lib/syncInputGroups";
 import {
@@ -1461,6 +1466,25 @@ function App() {
     [broadcastToAll, liveSessionsById, syncGroups, tabs],
   );
 
+  const runScriptInSession = useCallback(
+    (sessionId: string, raw: string, execute: boolean, withSync: boolean) => {
+      const actions = parseQuickCommandScript(raw);
+      const peerSessionIds = withSync ? getQuickCommandPeerSessionIds(sessionId) : [];
+      const send = (data: string) =>
+        peerSessionIds.length > 0
+          ? sendSessionInputWithSync(sessionId, data, peerSessionIds, {
+              preview: null,
+              registerSubmission: null,
+            })
+          : sendSessionInput(sessionId, data, {
+              preview: null,
+              registerSubmission: null,
+            });
+      return runQuickCommandScript(actions, { execute, send });
+    },
+    [getQuickCommandPeerSessionIds],
+  );
+
   const handleHistoryCommand = useCallback(
     (command: string, execute: boolean = true) => {
       if (
@@ -1472,30 +1496,35 @@ function App() {
       }
 
       const { sessionId } = activePane;
-      const data = buildTerminalCommandInput(command, execute);
-      const options = {
-        preview: execute
-          ? ({ kind: "reset" } as const)
-          : ({ kind: "data", data: command } as const),
-        registerSubmission: execute ? command : null,
-      };
-      const peerSessionIds = getQuickCommandPeerSessionIds(sessionId);
-      const sendInput =
-        peerSessionIds.length > 0
-          ? sendSessionInputWithSync(sessionId, data, peerSessionIds, options)
-          : sendSessionInput(sessionId, data, options);
+      if (hasQuickCommandDirectives(command)) {
+        void runScriptInSession(sessionId, command, execute, true).catch(() => {});
+      } else {
+        const data = buildTerminalCommandInput(command, execute);
+        const options = {
+          preview: execute
+            ? ({ kind: "reset" } as const)
+            : ({ kind: "data", data: command } as const),
+          registerSubmission: execute ? command : null,
+        };
+        const peerSessionIds = getQuickCommandPeerSessionIds(sessionId);
+        const sendInput =
+          peerSessionIds.length > 0
+            ? sendSessionInputWithSync(sessionId, data, peerSessionIds, options)
+            : sendSessionInput(sessionId, data, options);
 
-      void sendInput.catch(() => {});
+        void sendInput.catch(() => {});
+      }
       import("@/lib/backend/api").then(({ emit }) => {
         emit(`focus-terminal-${sessionId}`);
       });
     },
-    [activePane, getQuickCommandPeerSessionIds, liveSessionsById],
+    [activePane, getQuickCommandPeerSessionIds, liveSessionsById, runScriptInSession],
   );
 
   const handleSendToAllSessions = useCallback(
     (command: string, execute: boolean = true) => {
-      const data = buildTerminalCommandInput(command, execute);
+      const isScript = hasQuickCommandDirectives(command);
+      const data = isScript ? "" : buildTerminalCommandInput(command, execute);
       for (const tab of tabs) {
         for (const pane of collectSessionPanes(tab.root)) {
           if (
@@ -1507,14 +1536,18 @@ function App() {
             continue;
           }
           const { sessionId } = pane;
-          void sendSessionInput(sessionId, data, {
-            preview: execute ? { kind: "reset" } : { kind: "data", data: command },
-            registerSubmission: execute ? command : null,
-          }).catch(() => {});
+          if (isScript) {
+            void runScriptInSession(sessionId, command, execute, false).catch(() => {});
+          } else {
+            void sendSessionInput(sessionId, data, {
+              preview: execute ? { kind: "reset" } : { kind: "data", data: command },
+              registerSubmission: execute ? command : null,
+            }).catch(() => {});
+          }
         }
       }
     },
-    [liveSessionsById, tabs],
+    [liveSessionsById, tabs, runScriptInSession],
   );
 
   const handleReconnected = useCallback(

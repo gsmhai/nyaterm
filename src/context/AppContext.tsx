@@ -130,6 +130,7 @@ export type TerminalAppSettings = Pick<
   | "ai"
   | "keybindings"
   | "transfer"
+  | "one_keys"
 >;
 
 export const AppContext = createContext<AppContextType | null>(null);

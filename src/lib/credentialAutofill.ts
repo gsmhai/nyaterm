@@ -41,6 +41,18 @@ export function isDefaultPasswordPrompt(output: string): boolean {
   );
 }
 
+/**
+ * True for standard username prompts such as `login:`, `Username for 'https://…':`
+ * or `用户名：`. This is the built-in counterpart of `isDefaultPasswordPrompt` and
+ * lets OneKeys react even when an account has no custom Expect regex configured.
+ */
+export function isDefaultUsernamePrompt(output: string): boolean {
+  const prompt = extractCredentialPromptText(output);
+  return Boolean(
+    prompt && PROMPT_TERMINATOR_PATTERN.test(prompt) && USERNAME_PROMPT_PATTERN.test(prompt),
+  );
+}
+
 export function compilePromptRegex(pattern: string): RegExp | null {
   try {
     return new RegExp(pattern, "im");
@@ -86,6 +98,13 @@ export function findPasswordOnlyFallbackCredentials(
   credentials: SavedCredential[],
 ): SavedCredential[] {
   return credentials.filter((credential) => credential.enabled);
+}
+
+/** Accounts that can answer a username prompt without a custom Expect regex. */
+export function findUsernameFallbackCredentials(credentials: SavedCredential[]): SavedCredential[] {
+  return credentials.filter(
+    (credential) => credential.enabled && credential.username.trim().length > 0,
+  );
 }
 
 export function validatePromptRegex(pattern: string): boolean {

@@ -230,6 +230,7 @@ const DEFAULT_APP_SETTINGS: AppSettings = {
     activity_bar_layout: cloneDefaultActivityBarLayout(),
   },
   keybindings: {},
+  one_keys: { enabled: true, auto_fill: false },
 };
 
 const DEFAULT_RUNTIME_INFO: AppRuntimeInfo = {

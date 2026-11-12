@@ -3,6 +3,7 @@ mod appearance;
 mod diagnostics;
 mod general;
 mod interaction;
+mod one_keys;
 mod proxy;
 mod recording;
 mod search;
@@ -25,6 +26,7 @@ pub use appearance::{AppearanceSettings, TerminalColorsConfig, ThemeColorsConfig
 pub use diagnostics::{DiagnosticsLogLevel, DiagnosticsSettings};
 pub use general::GeneralSettings;
 pub use interaction::InteractionSettings;
+pub use one_keys::OneKeySettings;
 pub use proxy::ProxySettings;
 pub use recording::RecordingSettings;
 pub use search::{SearchEngine, SearchSettings};
@@ -76,6 +78,9 @@ pub struct AppSettings {
     /// User-customized keyboard shortcut overrides. Keys are shortcut IDs, values are hotkey strings.
     #[serde(default)]
     pub keybindings: HashMap<String, String>,
+    /// Terminal username/password prompt capture and autofill behaviour.
+    #[serde(default)]
+    pub one_keys: OneKeySettings,
 }
 
 pub fn load_app_settings(app: &impl Sized) -> AppResult<AppSettings> {

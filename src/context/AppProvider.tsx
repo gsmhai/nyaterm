@@ -288,6 +288,7 @@ const DEFAULT_APP_SETTINGS: AppSettings = {
     activity_bar_layout: cloneDefaultActivityBarLayout(),
   },
   keybindings: {},
+  one_keys: { enabled: true, auto_fill: false },
 };
 
 const RECENT_CONNECTION_LIMIT = 10;
@@ -1507,6 +1508,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       ai: appSettings.ai,
       keybindings: appSettings.keybindings,
       transfer: appSettings.transfer,
+      one_keys: appSettings.one_keys,
     }),
     [
       appSettings.appearance,
@@ -1517,6 +1519,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       appSettings.ai,
       appSettings.keybindings,
       appSettings.transfer,
+      appSettings.one_keys,
     ],
   );
 

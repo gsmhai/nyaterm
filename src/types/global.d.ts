@@ -421,6 +421,14 @@ export interface SavedCredential {
   has_password?: boolean;
 }
 
+/** Controls terminal OneKeys prompt capture and credential autofill. */
+export interface OneKeySettings {
+  /** Detect username/password prompts in terminal output. */
+  enabled: boolean;
+  /** Send the credential immediately when exactly one account matches. */
+  auto_fill: boolean;
+}
+
 /** Auth block for SSH connections. */
 export interface ConnectionAuth {
   mode: string;
@@ -1934,6 +1942,7 @@ export interface AppSettings {
   cloud_sync: CloudSyncSettings;
   ui: UiConfig;
   keybindings: Record<string, string>;
+  one_keys: OneKeySettings;
 }
 
 export interface FileEntry {

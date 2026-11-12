@@ -6,9 +6,11 @@ import { useCredentialAutofill } from "./useCredentialAutofill";
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   listen: vi.fn(),
+  sendSessionInput: vi.fn(),
 }));
 
 vi.mock("@/lib/invoke", () => ({ invoke: mocks.invoke }));
+vi.mock("@/lib/sessionInput", () => ({ sendSessionInput: mocks.sendSessionInput }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: mocks.listen }));
 
 const credential: SavedCredential = {
@@ -42,6 +44,7 @@ describe("useCredentialAutofill prompt detection gate", () => {
       return Promise.resolve(null);
     });
     mocks.listen.mockResolvedValue(vi.fn());
+    mocks.sendSessionInput.mockResolvedValue(undefined);
   });
 
   it("does not detect or retain prompts while the detection gate is closed", async () => {
@@ -94,5 +97,80 @@ describe("useCredentialAutofill prompt detection gate", () => {
       expect(result.current.panelState?.kind).toBe("password");
       expect(result.current.panelState?.matches).toEqual([credential]);
     });
+  });
+
+  it("offers accounts for a default username prompt without a custom Expect regex", async () => {
+    const hookRefs = refs();
+    const { result } = renderHook(() =>
+      useCredentialAutofill(
+        hookRefs.terminalRef,
+        hookRefs.sessionIdRef,
+        hookRefs.activeRef,
+        hookRefs.visibleRef,
+        hookRefs.performanceModeRef,
+        () => true,
+      ),
+    );
+
+    act(() => {
+      result.current.feedOutput("Username for 'https://github.com/acme/repo':");
+    });
+
+    await waitFor(() => {
+      expect(result.current.panelState?.kind).toBe("username");
+      expect(result.current.panelState?.matches).toEqual([credential]);
+    });
+  });
+
+  it("auto-fills without showing the picker when exactly one account matches", async () => {
+    const hookRefs = refs();
+    const oneKeysOptionsRef = { current: { enabled: true, autoFill: true } };
+    const { result } = renderHook(() =>
+      useCredentialAutofill(
+        hookRefs.terminalRef,
+        hookRefs.sessionIdRef,
+        hookRefs.activeRef,
+        hookRefs.visibleRef,
+        hookRefs.performanceModeRef,
+        () => true,
+        oneKeysOptionsRef,
+      ),
+    );
+
+    act(() => {
+      result.current.feedOutput("Username for 'https://github.com/acme/repo':");
+    });
+
+    await waitFor(() => {
+      expect(mocks.sendSessionInput).toHaveBeenCalledWith(
+        "session-1",
+        "alice\r",
+        expect.objectContaining({ origin: "credential_autofill", sensitivity: "secret" }),
+      );
+    });
+    expect(result.current.panelState).toBeNull();
+  });
+
+  it("ignores prompts while OneKeys capture is disabled", async () => {
+    const hookRefs = refs();
+    const oneKeysOptionsRef = { current: { enabled: false, autoFill: true } };
+    const { result } = renderHook(() =>
+      useCredentialAutofill(
+        hookRefs.terminalRef,
+        hookRefs.sessionIdRef,
+        hookRefs.activeRef,
+        hookRefs.visibleRef,
+        hookRefs.performanceModeRef,
+        () => true,
+        oneKeysOptionsRef,
+      ),
+    );
+
+    act(() => {
+      result.current.feedOutput("Password:");
+    });
+
+    expect(result.current.panelState).toBeNull();
+    expect(mocks.sendSessionInput).not.toHaveBeenCalled();
   });
 });

@@ -1,4 +1,4 @@
-import { KeyRound, UserRound } from "lucide-react";
+import { KeyRound, Plus, UserRound } from "lucide-react";
 import { memo, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Kbd } from "@/components/ui/kbd";
@@ -15,6 +15,7 @@ interface CredentialSuggestionsProps {
   cursorPosition: SuggestionCursorPosition;
   onSelect: (credential: SavedCredential) => void;
   onDismiss: () => void;
+  onOpenOneKeys?: () => void;
 }
 
 function CredentialSuggestions({
@@ -23,6 +24,7 @@ function CredentialSuggestions({
   cursorPosition,
   onSelect,
   onDismiss: _onDismiss,
+  onOpenOneKeys,
 }: CredentialSuggestionsProps) {
   const { t } = useTranslation();
   const listRef = useRef<HTMLDivElement>(null);
@@ -106,6 +108,19 @@ function CredentialSuggestions({
           </span>
         </div>
       ))}
+
+      {onOpenOneKeys ? (
+        <button
+          type="button"
+          className="df-hover flex w-full items-center gap-1.5 border-t px-3 py-1.5 text-left text-[0.6875rem]"
+          style={{ borderColor: "var(--df-border)", color: "var(--df-text-muted)" }}
+          onClick={onOpenOneKeys}
+        >
+          <Plus className="h-3.5 w-3.5" />
+          <span className="min-w-0 flex-1 truncate">{t("oneKeys.saveTo")}</span>
+          <span aria-hidden="true">+</span>
+        </button>
+      ) : null}
 
       <div
         className="px-2 py-1 border-t flex items-center gap-3 text-[0.625rem]"

@@ -25,6 +25,7 @@ import {
   MdSwapHoriz,
   MdTerminal,
   MdTranslate,
+  MdVpnKey,
 } from "react-icons/md";
 import { RiGeminiLine } from "react-icons/ri";
 import { TbCubeSpark } from "react-icons/tb";
@@ -35,6 +36,7 @@ import { AppearanceTab } from "@/components/settings/AppearanceTab";
 import { GeneralTab } from "@/components/settings/GeneralTab";
 import { InteractionTab } from "@/components/settings/InteractionTab";
 import { KeyboardShortcutsTab } from "@/components/settings/KeyboardShortcutsTab";
+import { OneKeysTab } from "@/components/settings/OneKeysTab";
 import { SearchTab } from "@/components/settings/SearchTab";
 import { SecurityTab } from "@/components/settings/SecurityTab";
 import { SyncBackupTab } from "@/components/settings/SyncBackupTab";
@@ -75,6 +77,8 @@ type SettingsTabConfig = {
 const SETTINGS_GROUP_DEFAULT_TABS: Record<string, string> = {
   ai: "ai-general",
   ai_group: "ai-general",
+  one_keys_group: "one-keys",
+  oneKeys: "one-keys",
   security_group: "security",
   syncBackup_group: "syncBackup",
   terminal: "terminal-general",
@@ -190,6 +194,12 @@ export default function SettingsPage() {
         items: ["transfer"],
       },
       {
+        id: "one_keys_group",
+        label: t("settings.groupOneKeys"),
+        icon: "one_keys",
+        items: ["one-keys"],
+      },
+      {
         id: "security_group",
         label: t("settings.groupSecurity"),
         icon: "security",
@@ -252,6 +262,7 @@ export default function SettingsPage() {
       Component: TranslationTab,
     },
     { id: "security", label: t("settings.security"), icon: "security", Component: SecurityTab },
+    { id: "one-keys", label: t("settings.oneKeys"), icon: "one_keys", Component: OneKeysTab },
     { id: "syncBackup", label: t("settings.syncBackup"), icon: "cloud_sync" },
     {
       id: "terminal-general",
@@ -309,6 +320,7 @@ export default function SettingsPage() {
     search: MdSearch,
     translate: MdTranslate,
     security: MdSecurity,
+    one_keys: MdVpnKey,
     terminal: MdTerminal,
     mouse: MdMouse,
     keyboard: MdKeyboard,

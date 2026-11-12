@@ -80,6 +80,7 @@ import {
 } from "@/lib/terminalSessionCwd";
 import { buildStartupCommandPayload } from "@/lib/appSessionFactory";
 import { TERMINAL_SEARCH_VISIBLE_MATCH_LIMIT } from "@/lib/terminalSearch";
+import { openSettings } from "@/lib/windowManager";
 import type { AiCaptureEvent, TerminalExecutionState } from "@/types/global";
 import ActionLinkMenu from "./ActionLinkMenu";
 import ActionLinkTooltip from "./ActionLinkTooltip";
@@ -246,7 +247,16 @@ export default function XTerminal({
     appearance,
     interaction,
     terminal: terminalSettings,
+    one_keys: oneKeysSettings,
   } = terminalAppSettings;
+  const oneKeysOptionsRef = useRef({
+    enabled: oneKeysSettings?.enabled ?? true,
+    autoFill: oneKeysSettings?.auto_fill ?? false,
+  });
+  oneKeysOptionsRef.current = {
+    enabled: oneKeysSettings?.enabled ?? true,
+    autoFill: oneKeysSettings?.auto_fill ?? false,
+  };
   const terminalThemeColors = useMemo(
     () => buildTerminalThemeColors(terminalTheme.colors.terminal, appearance),
     [appearance, terminalTheme.colors.terminal],
@@ -834,6 +844,7 @@ export default function XTerminal({
     visibleRef,
     performanceModeRef,
     canDetectCredentialPrompt,
+    oneKeysOptionsRef,
   );
 
   // Create and setup terminal
@@ -3164,6 +3175,7 @@ export default function XTerminal({
           cursorPosition={credentialCursorPosition}
           onSelect={(credential) => void handleCredentialSelect(credential)}
           onDismiss={dismissCredentialPanel}
+          onOpenOneKeys={() => void openSettings("one-keys")}
         />
 
         <ActionLinkTooltip state={tooltipState} />

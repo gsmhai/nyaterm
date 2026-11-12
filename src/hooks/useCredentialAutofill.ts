@@ -7,8 +7,10 @@ import {
   extractCredentialPromptText,
   findMatchingCredentials,
   findPasswordOnlyFallbackCredentials,
+  findUsernameFallbackCredentials,
   getCredentialPromptPattern,
   isDefaultPasswordPrompt,
+  isDefaultUsernamePrompt,
   stripTerminalControlSequences,
 } from "@/lib/credentialAutofill";
 import { invoke } from "@/lib/invoke";
@@ -37,6 +39,19 @@ export interface CredentialPanelState {
   promptText: string;
 }
 
+/** Live OneKeys preferences mirrored from app settings. */
+export interface OneKeyAutofillOptions {
+  /** Master switch: detect prompts at all. */
+  enabled: boolean;
+  /** Send the value immediately when exactly one account matches. */
+  autoFill: boolean;
+}
+
+const DEFAULT_ONE_KEY_OPTIONS: OneKeyAutofillOptions = {
+  enabled: true,
+  autoFill: false,
+};
+
 function extractCurrentPromptLine(promptText: string) {
   return promptText.trim();
 }
@@ -59,6 +74,7 @@ export function useCredentialAutofill(
   visibleRef: React.RefObject<boolean>,
   performanceModeRef: React.RefObject<string>,
   canDetectPrompt?: () => boolean,
+  oneKeysOptionsRef?: React.RefObject<OneKeyAutofillOptions | null>,
 ) {
   const [panelState, setPanelState] = useState<CredentialPanelState | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(-1);
@@ -219,17 +235,18 @@ export function useCredentialAutofill(
     [getCursorViewportPosition],
   );
 
-  const handleSelectImpl = useCallback(
-    async (credential: SavedCredential) => {
-      const state = panelStateRef.current;
-      if (!state || sendingRef.current) return;
-
-      const wasUsername = state.kind === "username";
-
+  /**
+   * Send one credential and reset detection state. Shared by the interactive
+   * picker and the OneKeys auto-fill path so both behave identically (notably
+   * the "username now, password next" hand-off).
+   */
+  const applyCredentialFill = useCallback(
+    async (credential: SavedCredential, kind: CredentialPromptKind) => {
+      if (sendingRef.current) return false;
       sendingRef.current = true;
       try {
-        await sendCredentialValue(credential, state.kind);
-        if (wasUsername) {
+        await sendCredentialValue(credential, kind);
+        if (kind === "username") {
           pendingCredentialRef.current = {
             credentialId: credential.id,
             expiresAt: Date.now() + 60_000,
@@ -250,7 +267,7 @@ export function useCredentialAutofill(
       setSelectedIndex(-1);
       recentPromptsRef.current.clear();
 
-      if (wasUsername) {
+      if (kind === "username") {
         // Keep the buffer so a password prompt that arrived during selection
         // can still be detected. The pending prompt text suppresses only the
         // username prompt that was just filled.
@@ -261,8 +278,18 @@ export function useCredentialAutofill(
         outputBufferRef.current = "";
         recentPromptsRef.current.clear();
       }
+      return true;
     },
     [sendCredentialValue],
+  );
+
+  const handleSelectImpl = useCallback(
+    async (credential: SavedCredential) => {
+      const state = panelStateRef.current;
+      if (!state) return;
+      await applyCredentialFill(credential, state.kind);
+    },
+    [applyCredentialFill],
   );
 
   useEffect(() => {
@@ -338,28 +365,44 @@ export function useCredentialAutofill(
           }
         }
 
-        const passwordMatches = findMatchingCredentials(credentials, "password", promptText);
-        if (passwordMatches.length > 0) {
-          if (!rememberPrompt("password", promptText, now)) return;
+        const options = oneKeysOptionsRef?.current ?? DEFAULT_ONE_KEY_OPTIONS;
+        const canAutoFill = (credential: SavedCredential, kind: CredentialPromptKind) =>
+          kind === "username"
+            ? credential.username.trim().length > 0
+            : Boolean(credential.has_password);
 
-          showPanel("password", passwordMatches, promptText);
-          return;
-        }
+        const offerMatches = async (
+          kind: CredentialPromptKind,
+          matches: SavedCredential[],
+        ): Promise<boolean> => {
+          if (matches.length === 0) return false;
+          if (!rememberPrompt(kind, promptText, now)) return true;
+
+          // Only auto-send when the answer is unambiguous. With several accounts
+          // the picker stays up so we never type the wrong credentials.
+          if (options.autoFill && matches.length === 1 && canAutoFill(matches[0], kind)) {
+            await applyCredentialFill(matches[0], kind);
+          } else {
+            showPanel(kind, matches, promptText);
+          }
+          return true;
+        };
+
+        const passwordMatches = findMatchingCredentials(credentials, "password", promptText);
+        if (await offerMatches("password", passwordMatches)) return;
 
         if (isDefaultPasswordPrompt(promptText)) {
           const fallbackMatches = findPasswordOnlyFallbackCredentials(credentials);
-          if (fallbackMatches.length > 0) {
-            if (!rememberPrompt("password", promptText, now)) return;
-
-            showPanel("password", fallbackMatches, promptText);
-            return;
-          }
+          if (await offerMatches("password", fallbackMatches)) return;
         }
 
-        const usernameMatches = findMatchingCredentials(credentials, "username", promptText);
-        if (usernameMatches.length === 0) return;
-        if (!rememberPrompt("username", promptText, now)) return;
-        showPanel("username", usernameMatches, promptText);
+        let usernameMatches = findMatchingCredentials(credentials, "username", promptText);
+        // Built-in fallback: `Username for 'https://…':`, `login:` etc. must
+        // still surface OneKeys accounts even without a custom Expect regex.
+        if (usernameMatches.length === 0 && isDefaultUsernamePrompt(promptText)) {
+          usernameMatches = findUsernameFallbackCredentials(credentials);
+        }
+        await offerMatches("username", usernameMatches);
       } finally {
         detectionInFlightRef.current = false;
         if (detectionPendingRef.current) {
@@ -368,7 +411,16 @@ export function useCredentialAutofill(
         }
       }
     },
-    [activeRef, visibleRef, loadCredentials, rememberPrompt, sendCredentialValue, showPanel],
+    [
+      activeRef,
+      visibleRef,
+      loadCredentials,
+      rememberPrompt,
+      sendCredentialValue,
+      showPanel,
+      applyCredentialFill,
+      oneKeysOptionsRef,
+    ],
   );
 
   useEffect(() => {
@@ -378,6 +430,11 @@ export function useCredentialAutofill(
   const feedOutputImpl = useCallback(
     (payload: string) => {
       if (performanceModeRef.current !== "normal") return;
+      if ((oneKeysOptionsRef?.current ?? DEFAULT_ONE_KEY_OPTIONS).enabled === false) {
+        outputBufferRef.current = "";
+        recentPromptsRef.current.clear();
+        return;
+      }
       if (!activeRef.current || !visibleRef.current) return;
       if (canDetectPrompt && !canDetectPrompt()) {
         outputBufferRef.current = "";
@@ -393,7 +450,7 @@ export function useCredentialAutofill(
       if (panelStateRef.current || sendingRef.current) return;
       void detectPrompt(outputBufferRef.current);
     },
-    [activeRef, visibleRef, performanceModeRef, canDetectPrompt, detectPrompt],
+    [activeRef, visibleRef, performanceModeRef, canDetectPrompt, detectPrompt, oneKeysOptionsRef],
   );
 
   useEffect(() => {
